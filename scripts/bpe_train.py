@@ -2,6 +2,8 @@ import pyarrow.parquet as pq
 from utils.common import get_base_dir
 import os
 from bpe.tokenizer import BaseTokenizer
+import sys
+
 
 BASE_DIR = get_base_dir()
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -16,61 +18,25 @@ def list_parquet_files(data_dir=None):
     parquet_paths = [os.path.join(data_dir, f) for f in parquet_files]
     return parquet_paths
 
-def split_data(n_parallel = 8):
-    parquet_files = list_parquet_files()
-    row_groups = []
-    n_groups = 0
-    for parquet_file in parquet_files:
-        pf = pq.ParquetFile(parquet_file)
-        n_groups += pf.num_row_groups
-        row_groups.extend([(parquet_file, i) for i in range(pf.num_row_groups)])
-
-    # split the data to n_parallel parts
-    divisor, remainder = n_groups // n_parallel, n_groups % n_parallel
-    splits = []
-    idx = 0
-    for i in range(n_parallel):
-        part = {}
-        if i < remainder: # handle one more data row group
-            for filepath, row_group in row_groups[idx: idx + divisor + 1]:
-                if filepath not in part:
-                    part[filepath] = [row_group]
-                else:
-                    part[filepath].append(row_group)
-            splits.append(part)
-            idx = idx + divisor + 1
-        else:
-            for filepath, row_group in row_groups[idx: idx + divisor]:
-                if filepath not in part:
-                    part[filepath] = [row_group]
-                else:
-                    part[filepath].append(row_group)
-            splits.append(part)
-            idx = idx + divisor
-    return splits
-    
 
 
-
-
-# def load_text():
-#     parquet_paths = list_parquet_files(DATA_DIR)[:2]
-#     text = []
-#     for parquet_path in parquet_paths:
-#         partial_list = pq.ParquetFile(parquet_path).read().column('text').to_pylist()
-#         text.extend(partial_list)
-#     return text
+def load_text(start=0, step=1):
+    parquet_paths = list_parquet_files(DATA_DIR)[:8]
+    for parquet_path in parquet_paths:
+        pf = pq.ParquetFile(parquet_path)
+        for i in range(start, pf.num_row_groups, step):
+            text = ''.join(pf.read_row_group(i).column('text').to_pylist())
+            yield text
 
 
 
 
 # text = load_text()
-n_parallel = 5
+n_parallel = int(sys.argv[1])
 
-data_splits = split_data(n_parallel=n_parallel)
 
 tokenizer = BaseTokenizer()
-tokenizer.train_from_text(data_splits, vocab_size=2048, n_parallel=n_parallel)
+tokenizer.train_from_text(load_text(), vocab_size=2048, max_char=1e8, n_parallel=n_parallel)
 
 a = tokenizer.encode('This is a test')
 print(a)
