@@ -56,7 +56,7 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--num-threads', type=int, default=16, help='Number of threads to download the files. (default: 16)')
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     BASE_DIR = get_base_dir()
     DATA_DIR = os.path.join(BASE_DIR, 'data')
