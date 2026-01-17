@@ -5,6 +5,7 @@ This is to speed up the encode and decode process for a faster model training.
 
 import os
 import tiktoken
+import pickle
 from functools import lru_cache
 from bpe.tokTrainer import TokenizerTrainer
 
@@ -30,8 +31,8 @@ class BaseTokenizer:
         self.bos_token_id = self.encode_special(bos_token)
 
     @classmethod
-    def train_from_iterator(cls, text_iterator, vocab_size, max_char, n_parallel=8):
-        trainer = TokenizerTrainer(text_iterator, vocab_size, max_char, PATTERN, SPECIAL_TOKENS, n_parallel=n_parallel)
+    def train_from_iterator(cls, vocab_size, max_char, n_parallel=8):
+        trainer = TokenizerTrainer(vocab_size, max_char, PATTERN, SPECIAL_TOKENS, n_parallel=n_parallel)
         mergeable_ranks, special_tokens, pattern = trainer.train_from_iterator()
         enc = tiktoken.Encoding(
             name='pybpe',
@@ -52,7 +53,7 @@ class BaseTokenizer:
             mergeable_ranks=mergeable_ranks,
             special_tokens=special_tokens
         )
-        return cls(enc, '|<bos|>')
+        return cls(enc, '<|bos|>')
 
 
     def get_vocab_size(self):
@@ -63,12 +64,12 @@ class BaseTokenizer:
         return self.enc.special_tokens_set
 
     def id_to_token(self, id):
-        return self.enc.encode_single_token([id])
+        return self.enc.decode([id])
     
     @lru_cache(maxsize=32)
     def encode_special(self, text):
-        # Need assert to make sure text belong to one of the special tokens?
-        return self.encode_single_token(text)
+        assert text in self.enc.special_tokens_set, f"{text} is not a special token!"
+        return self.enc.encode_single_token(text)
     
     def get_bos_token_id(self):
         return self.bos_token_id
@@ -94,9 +95,10 @@ class BaseTokenizer:
             if append is not None:
                 for ids_row in ids:
                     ids_row.append(append_id)
-        
         else:
             raise ValueError(f"Invalid input type: {type(text)}")
+
+        return ids
     
 
     def __call__(self, *args, **kwargs):
@@ -108,6 +110,7 @@ class BaseTokenizer:
 
     def save(self, tokenizer_dir):
         pickle_path = os.path.join(tokenizer_dir, 'tokenizer.pkl')
-        data = (self.enc._mergeable_ranks, self.special_tokens_set, self.n_vocab)
+        data = (self.enc._mergeable_ranks, self.enc._special_tokens, PATTERN)
         with open(pickle_path, 'wb') as f:
             pickle.dump(data, f)
+        print(f"Saved tokenizer encoding to {pickle_path}")

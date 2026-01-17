@@ -3,10 +3,10 @@ import multiprocessing
 from tqdm import tqdm
 from collections import Counter
 
+from utils.dataloader import load_text
 
 class TokenizerTrainer:
-    def __init__(self, text_iterator, vocab_size, max_char, pattern, special_tokens, n_parallel=None):
-        self.text_iterator = text_iterator
+    def __init__(self, vocab_size, max_char, pattern, special_tokens, n_parallel=None):
         self.vocab_size = vocab_size
         self.max_char = max_char
         self.pattern = pattern
@@ -15,12 +15,11 @@ class TokenizerTrainer:
         self.n_parallel = n_parallel
     
     def _load_text(self):
-        text_iterator = self.text_iterator
         max_char = self.max_char
 
         char_count = 0
         word_dict = Counter()
-        for text in text_iterator:
+        for text in load_text():
             text = ''.join(text)
             if char_count < max_char:
                 word_list = re.findall(self.compiled_pattern, text)
@@ -80,7 +79,6 @@ class TokenizerTrainer:
         return {k: v + start_index for v, k in enumerate(special_tokens)}
 
     def train_from_iterator(self):
-        text_iterator = self.text_iterator
         vocab_size = self.vocab_size
         max_char = self.max_char
         n_parallel = self.n_parallel
@@ -150,7 +148,7 @@ class TokenizerTrainer:
             for q in task_queues:
                 q.put(('STOP', None))
             
-        special_tokens = self._register_special_tokens(special_tokens, start_id=max(vocab) + 1)
+        special_tokens = self._register_special_tokens(special_tokens, start_index=max(vocab) + 1)
         mergeable_ranks = {v: k for k, v in vocab.items()}
 
         return mergeable_ranks, special_tokens, pattern

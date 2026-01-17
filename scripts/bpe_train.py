@@ -2,7 +2,6 @@ import os
 import time
 import argparse
 from utils.common import get_base_dir
-from utils.dataloader import load_text
 from bpe.tiktokenTokenizer import BaseTokenizer
 
 
@@ -15,7 +14,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     start_time = time.time()
-    tokenizer = BaseTokenizer.train_from_iterator(load_text(), vocab_size=args.vocab_size, max_char=args.max_chars, n_parallel=args.num_workers)
+    tokenizer = BaseTokenizer.train_from_iterator(vocab_size=args.vocab_size, max_char=args.max_chars, n_parallel=args.num_workers)
     end_time = time.time()
     print(f'tokenizer finished training! Total time used is {end_time - start_time} secs!')
-    tokenizer.save(tokenizer_dir=os.path.join(get_base_dir(), 'tokenizer'))
+    tokenizer_dir = os.path.join(get_base_dir(), 'tokenizer')
+    if not os.path.exists(tokenizer_dir):
+        os.makedirs(tokenizer_dir)
+    tokenizer.save(tokenizer_dir=tokenizer_dir)
