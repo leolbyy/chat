@@ -2,7 +2,7 @@ import os
 import time
 import argparse
 from utils.common import get_base_dir
-from bpe.tiktokenTokenizer import BaseTokenizer
+from bpe.tokenizer import BaseTokenizer
 
 
 if __name__ == '__main__':

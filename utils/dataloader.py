@@ -18,10 +18,128 @@ def list_parquet_files(data_dir=None):
     return parquet_paths
 
 
-def load_text(start=0, step=1):
-    parquet_paths = list_parquet_files(DATA_DIR)
-    for parquet_path in parquet_paths:
-        pf = pq.ParquetFile(parquet_path)
-        for i in range(start, pf.num_row_groups, step):
-            text = pf.read_row_group(i).column('text').to_pylist()
-            yield text
+# def load_text(split, pf=0, start=0, step=1):
+#     parquet_paths = list_parquet_files(DATA_DIR)
+#     for parquet_path in parquet_paths:
+#         pf = pq.ParquetFile(parquet_path)
+#         for i in range(start, pf.num_row_groups, step):
+#             text = pf.read_row_group(i).column('text').to_pylist()
+#             yield text
+
+
+def load_text(split, pf_idx=0, start=0, step=1, epoch=0, tokenizer_batch_size=128):
+    parquet_paths = list_parquet_files()
+    if split == 'train':
+        parquet_paths = parquet_paths[:-1]
+    else:
+        parquet_paths = parquet_paths[-1:]
+    
+    while True:
+        if pf_idx >= len(parquet_paths):
+            pf_idx = 0
+        while pf_idx < len(parquet_paths):
+            pf = pq.ParquetFile(parquet_paths[pf_idx])
+            for rg_idx in range(start, pf.num_row_groups, step):
+                rg = pf.read_row_group(rg_idx)
+                batch = rg.column('text').to_pylist()
+                for i in range(0, len(batch), tokenizer_batch_size):
+                    yield batch[i: i + tokenizer_batch_size], (pf_idx, rg_idx, epoch)
+            pf_idx += 1
+        pf_idx = 0
+        epoch += 1
+
+
+
+def tokenizing_distributed_data_loader_with_state_bos_bestfit(
+    tokenizer,
+    B, T, split,
+    tokenizer_threads=4,
+    tokenizer_batch_size=128,
+    device="cuda",
+    resume_state_dict=None,
+    buffer_size=1000
+):
+
+    assert split in ('train', 'val'), f"split must be 'train' or 'val'. got {split}"
+
+    ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
+    if resume_state_dict is not None:
+        pf_idx = resume_state_dict['pf_idx']
+        rg_idx = resume_state_dict['rg_idx'] + ddp_rank
+        epoch = resume_state_dict['epoch']
+    else:
+        pf_idx = 0
+        start = ddp_rank
+        epoch = 0
+    
+    step = ddp_world_size
+    
+    row_capacity = T + 1
+    batches = load_text(split, pf_idx=pf_idx, start=start, step=step, epoch=epoch, tokenizer_batch_size=tokenizer_batch_size)
+    bos_token = tokenizer.get_bos_token_id()
+    doc_buffer = []
+
+    while True:
+        rows = []
+        for _ in range(B):
+            row = []
+            while len(row) < row_capacity:
+                while len(doc_buffer) < buffer_size:
+                    doc_batch, (pf_idx, rg_idx, epoch) = next(batches)
+                    token_lists = tokenizer.encode(doc_batch, prepend=bos_token, num_threads=tokenizer_threads)
+                    doc_buffer.extend(token_lists)
+                remaining = row_capacity - len(row)
+                best_idx = -1
+                best_len = 0
+                for i, doc in enumerate(doc_buffer):
+                    if len(doc) <= remaining and len(doc) > best_len:
+                        best_idx = i
+                        best_len = len(doc)
+                if best_idx >= 0:
+                    doc = doc_buffer.pop(bext_idx)
+                    row.extend(doc)
+                else: # no doc can fit in the remaining space
+                    shortest_idx = min(range(len(doc_buffer)), key=lambda x: len(doc_buffer[x]))
+                    doc = doc_buffer.pop(shortest_idx)
+                    row.extend(doc[:remaining])
+            rows.append(row)
+        
+        use_cuda = device == "cuda"
+        batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
+        inputs = batch_tensor[:, :-1].to(device=device, non_blocking=use_cuda)
+        targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda)
+    yield inputs, targets, {"pf_idx": pf_idx, "rg_idx": rg_idx, "epoch": epoch}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

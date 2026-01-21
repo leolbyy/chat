@@ -7,14 +7,7 @@ import torch
 import torch.nn
 import torch.nn.functional as F
 
-
-
-if torch.cuda.is_available():
-    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-    # Official docs of FA3 label it as "beta" and want you to install FA3 from source, which is a pain.
-    # Wishing for official FA3 wheels soon, for now this seems to be a fast way to get them (ty varunneal)
-    from kernels import get_kernel
-    flash_attn = get_kernel('varunneal/flash-attention-3').flash_attn_interface
+from nanochat.flash_attention import flash_attn
 
 
 @dataclass
@@ -46,7 +39,7 @@ def my_attention(q, k, v, enable_gqa=False):
     assert q.shape(-2) <= k.shape(-2)
     
     attention_mask = torch.ones(q.shape(-2), k.shape(-2), dtype=q.dtype. device=q.device).triu(k.shape(-2) - q.shape(-2) + 1)
-    attention_mask = attention_mask.masked_fill_(attention_mask == 1, -float('inf'))
+    attention_mask = attention_mask.masked_fill(attention_mask == 1, -float('inf'))
 
     scale_factor = 1 / math.sqrt(q.size(-1))
 
@@ -110,34 +103,29 @@ class CausalSelfAttention(nn.Module):
         cos, sin = cos_sin
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
-        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
 
-        Tq = q.size(2)
-        Tk = k.size(2)
 
-        enable_gqa = self.n_head != self.n_kv_head
-
-        if kv_cache is None or Tq == Tk: # In traning mode, or at the begining of inference (kv cache is empty now)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
-        elif Tq == 1: # No need for mask
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
+        # Flash Attention (FA3 on Hopper+, PyTorch SDPA fallback elsewhere)
+        # window_size is (left, right) tuple: (N, 0) for causal, (-1, 0) for full context
+        if kv_cache is None:
+            # Training: causal attention with optional sliding window
+            y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
         else:
-            # kv cache is not empty, we need to do masking for part of the keys
+            # Inference: use flash_attn_with_kvcache which handles cache management
+            k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
+            y = flash_attn.flash_attn_with_kvcache(
+                q, k_cache, v_cache,
+                k=k, v=v,
+                cache_seqlens=kv_cache.cache_seqlens,
+                causal=True,
+                window_size=window_size,
+            )
+            # Advance position after last layer processes
+            if self.layer_idx == kv_cache.n_layers - 1:
+                kv_cache.advance(T)
 
-            # Original implementation in nanochat
-            # attn_mask = torch.zeros((Tq, Tk), dtype=torch.bool, device=q.device)
-            # prefix_len = Tk - Tq
-            # attn_mask[:, :prefix_len] = True
-            # attn_mask[:, prefix_len:] = torch.tril(torch.ones((Tq, Tq), dtype=torch.bool, device=q.device))
-            
-            # Implementation of my own
-            attn_mask = torch.ones(Tq, Tk, dtype=q.dtype, device=q.device)
-            attn_mask = attn_mask.triu(diagonal=Tk - Tq + 1)
-            attn_mask.masked_fill_(attn_mask == 1, -float('inf'))
-
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, enable_gqa=enable_gqa)
-
-        y = y.transpose(1, 2).contiguous().view(B, T, -1)
+        # Re-assemble the heads and project back to residual stream
+        y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
 
@@ -201,7 +189,7 @@ class GPT(nn.Module):
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
-
+    @torch.no_grad()
     def init_weights(self):
         torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=1.0)
         torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
@@ -217,9 +205,8 @@ class GPT(nn.Module):
             torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
             torch.nn.init.zeros_(block.mlp.c_proj.weight)
 
-        with torch.no_grad():
-            self.resid_lambdas.fill_(1.0)
-            self.x0_lamdbas.fill_(0.0)
+        self.resid_lambdas.fill_(1.0)
+        self.x0_lamdbas.fill_(0.0)
         
         head_dim = self.config.n_embed // self.config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
@@ -282,6 +269,16 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(resid_params) + len(x0_params)
     
         dmodel_lr_scale = (model / 768) ** -0.5
+
+        AdamWFactory = DistAdamW if ddp else partial(torch.optim.AdamW, fused=True)
+        adamw_kwargs = dict(betas=adam_betas, eps=1e-10, weight_decay=0.0)
+        adamw_groups = [
+            dict(params=embedding_params, lr=embedding_lr * dmodel_lr_scale),
+            dict(params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale),
+            dict(params=resid_params, lr=scalr_lr * 0.01), # resid is very sensitive, so use a small lr
+            dict(params=x0_params, lr=scalr_lr)
+        ]
+        adamw_optimizer = AdamWFactory(adamw_groups, **adamw_kwargs)
 
         muon_kwargs = dict(lr=matrix_lr, momentum=0.95, weight_decay=weight_decay)
         MuonFactory = DistMuon if ddp else Muon

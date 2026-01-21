@@ -114,3 +114,8 @@ class BaseTokenizer:
         with open(pickle_path, 'wb') as f:
             pickle.dump(data, f)
         print(f"Saved tokenizer encoding to {pickle_path}")
+
+
+def get_tokenizer(tokenizer_dir):
+    return BaseTokenizer.load_from_directory(tokenizer_dir)
+
