@@ -2,6 +2,7 @@
 This module handles distributed AdamW in ZeRo-2 Style
 """
 import torch
+from torch import Tensor
 import torch.distributed as dist
 
 def adamw_step_fused(
@@ -27,7 +28,7 @@ def adamw_step_fused(
 
 class DistAdamW(torch.optim.Optimizer):
     def __init__(self, param_groups, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.01):
-        defaults = {lr=lr, betas=betas, eps=eps, weight_decay=weight_decay}
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         rank = dist.get_rank()
         world_size = dist.get_world_size
         if rank == 0:
@@ -84,7 +85,7 @@ class DistAdamW(torch.optim.Optimizer):
             self._eps_t.fill_ = eps
             self._wd_t.fill_ = wd
 
-            for p, p_slice, g_slice, future is_large in group_items:
+            for p, p_slice, g_slice, future, is_large in group_items:
                 future.wait()
                 state = self.state[p]
                 if not state:

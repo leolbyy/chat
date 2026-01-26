@@ -211,3 +211,4 @@ __marimo__/
 # Project
 data/
 tokenizer/
+eval_bundle/

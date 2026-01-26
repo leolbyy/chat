@@ -10,57 +10,63 @@ from contextlib import nullcontext
 
 import torch
 
-from bpe.tokenizer import get_tokenizer()
+from utils.common import get_base_dir, compute_init
+from utils.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
+
+from bpe.tokenizer import get_tokenizer, get_token_bytes
 
 from nanochat.gpt import GPT, GPTConfig
-
+from nanochat.loss_eval import evaluate_bpb
+from nanochat.core_eval import evaluate_model
+from nanochat.sample_eval import get_response
+from nanochat.checkpoint import save_checkpoint, load_checkpoint
 
 # -----------------------------------------------------------------------------
 # CLI arguments
 parser = argparse.ArgumentParser(description="Pretrain base model")
 # Runtime
-parser.add_argument("--device_type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
+parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 # Model architecture
 parser.add_argument("--depth", type=int, default=20, help="depth of the Transformer model")
-parser.add_argument("--aspect_ratio", type=int, default=64, help="model_dim = depth * aspect_ratio")
-parser.add_argument("--head_dim", type=int, default=128, help="target head dimension for attention, need be devisible by model_dim")
-parser.add_argument("--max_seq_len", type=int, default=2048, help="max context length")
+parser.add_argument("--aspect-ratio", type=int, default=64, help="model_dim = depth * aspect_ratio")
+parser.add_argument("--head-dim", type=int, default=128, help="target head dimension for attention, need be devisible by model_dim")
+parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 # Training horizon (only one used, in order of precedence)
-parser.add_argument("--num_iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
-parser.add_argument("--target_flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
-parser.add_argument("--target_param_data_ratio", type=int, default=8, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
+parser.add_argument("--num-iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
+parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
+parser.add_argument("--target-param-data-ratio", type=int, default=8, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
 # Optimization
-parser.add_argument("--device_batch_size", type=int, default=32, help="per-device batch size")
-parser.add_argument("--tokens_per_step", type=int, default=524288, help="num of tokens to accumulate gradient before update param")
-parser.add_argument("--embedding_lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
-parser.add_argument("--unembedding_lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
-parser.add_argument("--weight_decay", type=float, default=0.2, help="cautious weight decay for the Muon optimizer (for weights)")
-parser.add_argument("--matrix_lr", type=float, default=0.02, help="learning rate for matrix parameters (Muon)")
-parser.add_argument("--scalar_lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
-parser.add_argument("--adam_beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
-parser.add_argument("--adam_beta2", type=float, default=0.95, help="Adam beta2 for embedding/unembedding")
-parser.add_argument("--warmup_ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
-parser.add_argument("--warmdown_ratio", type=float, default=0.4, help="ratio of iterations for LR warmdown")
-parser.add_argument("--final_lr_frac", type=float, default=0.0, help="final LR as fraction of initial LR")
-parser.add_argument("--resume_from_step", type=int, default=-1, help="resume training from this step (-1 = disable)")
+parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size")
+parser.add_argument("--tokens-per-step", type=int, default=524288, help="num of tokens to accumulate gradient before update param")
+parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
+parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
+parser.add_argument("--weight-decay", type=float, default=0.2, help="cautious weight decay for the Muon optimizer (for weights)")
+parser.add_argument("--matrix-lr", type=float, default=0.02, help="learning rate for matrix parameters (Muon)")
+parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
+parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
+parser.add_argument("--adam-beta2", type=float, default=0.95, help="Adam beta2 for embedding/unembedding")
+parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
+parser.add_argument("--warmdown-ratio", type=float, default=0.4, help="ratio of iterations for LR warmdown")
+parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
+parser.add_argument("--resume-from-step", type=int, default=-1, help="resume training from this step (-1 = disable)")
 # Evaluation
-parser.add_argument("--eval_every", type=int, default=250, help="evaluate val bpb every N steps (-1 = disable)")
-parser.add_argument("--eval_tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
-parser.add_argument("--core_metric_every", type=int, default=2000, help="evaluate CORE metric every N steps (-1 = disable)")
-parser.add_argument("--core_metric_max_per_task", type=int, default=500, help="examples per task for CORE metric")
-parser.add_argument("--sample_every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
-parser.add_argument("--save_every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
+parser.add_argument("--eval-every", type=int, default=250, help="evaluate val bpb every N steps (-1 = disable)")
+parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
+parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluate CORE metric every N steps (-1 = disable)")
+parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
+parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
+parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 # Output
-parser.add_argument("--model_tag", type=str, default=None, help="override model tag for checkpoint directory name")
+parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
-
+user_config = vars(args).copy() 
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
 print(f"Device type set to {device_type}")
-ddp, ddp_rank, ddp_local_rank, ddp_world_size = compute_init(device_type=device_type)
+ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type=device_type)
 master_process = ddp_rank == 0
-autocast_ctx = torch.amp.autocast(device)
+autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16)
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
 
@@ -70,11 +76,12 @@ tokenizer_dir = os.path.join(base_dir, 'tokenizer')
 tokenizer = get_tokenizer(tokenizer_dir)
 vocab_size = tokenizer.get_vocab_size()
 print(f"Tokenizer vocab size: {vocab_size}")
+token_bytes = get_token_bytes(device=device)
 
 # Model kwargs
 model_dim = args.depth * args.aspect_ratio
-assert model_dim % head_dim == 0, f"head_dim is not devisible by model_dim. head_dim: {args.head_dim}, model_dim: {model_dim}"
-num_heads = model_dim // head_dim
+assert model_dim % args.head_dim == 0, f"head_dim is not devisible by model_dim. head_dim: {args.head_dim}, model_dim: {model_dim}"
+num_heads = model_dim // args.head_dim
 num_kv_heads = num_heads # disable gqa. Allow config later
 print(f"num_layers: {args.depth}")
 print(f"model_dim: {model_dim}")
@@ -85,7 +92,7 @@ print(f"num_kv_heads: {num_kv_heads}")
 tokens_per_fwd = args.device_batch_size * args.max_seq_len
 world_tokens_per_fwd = tokens_per_fwd * ddp_world_size
 assert args.tokens_per_step % world_tokens_per_fwd == 0
-grad_accum_steps = args.tokens_per_fwd // world_tokens_per_fwd
+grad_accum_steps = args.tokens_per_step // world_tokens_per_fwd
 print(f"Tokens / micro-batch / rank: {args.device_batch_size} * {args.max_seq_len} = {tokens_per_fwd}")
 print(f"Tokens / micro-batch: {world_tokens_per_fwd}")
 print(f"Total batch size in tokens {args.tokens_per_step} --> gradient accumulation steps: {grad_accum_steps}")
@@ -111,21 +118,31 @@ if args.depth != 12:
 # Initialize the Model
 
 # Create a new model with random weights
-model_kwargs_config = dict(sequence_len=args.max_seq_len, vocab_size=vocab_size, n_layer=args.depth, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
+model_kwargs_config = dict(seq_len=args.max_seq_len, vocab_size=vocab_size, n_layer=args.depth, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
 with torch.device("meta"):
-    model_cofig = GPTConfig(**model_kwargs_config)
+    model_config = GPTConfig(**model_kwargs_config)
     model = GPT(model_config)
 model.to_empty(device=device) # All tensors got storage on target device but with garbage data (any data that was previously in the allocated memory)
-model.init_weights()
 
 # If resuming, overwrite model parameters
-# Implement later
+base_dir = get_base_dir()
+output_dirname = args.model_tag if args.model_tag else f"d{args.depth}"
+checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
+resuming = args.resume_from_step != -1
+if resuming:
+    print(f'Resume from step {args.resume_from_step}')
+    model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, args.resume_from_step, load_optimizer=True, rank=ddp_rank)
+    model.load_state_dict(model_data, strict=True, assign=True)
+    del model_data
+else:
+    model.init_weights()
 
-origi_model = model
+
+orig_model = model
 model = torch.compile(model, dynamic=False)
 num_params = sum(p.numel() for p in model.parameters())
 print(model.parameters())
-num_scaling_params = origi_model.num_scaling_params()
+num_scaling_params = orig_model.num_scaling_params()
 print(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
 num_flops_per_token = model.estimate_flops()
 print(f"Estimated flops per token: {num_flops_per_token}")
@@ -150,7 +167,7 @@ print(f"Total training FLOPs estimate: {total_tokens * num_flops_per_token:e}")
 
 # -----------------------------------------------------------------------------
 # Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
-adma_betas = (args.adam_beta1, args.adam_beta2)
+adam_betas = (args.adam_beta1, args.adam_beta2)
 optimizers = model.setup_optimizers(
     unembedding_lr = args.unembedding_lr * batch_lr_scale,
     embedding_lr = args.embedding_lr * batch_lr_scale,
@@ -169,9 +186,9 @@ if resuming:
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
 data_loader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
-train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split='train', device=device, resumt_state_dict=data_loader_resume_state_dict)
-val_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split='val', deivce=device)
-x, y, dataloader_state_dict = next(trian_loader)
+train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split='train', device=device, resume_state_dict=data_loader_resume_state_dict)
+val_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split='val', device=device)
+x, y, dataloader_state_dict = next(train_loader)
 
 # -----------------------------------------------------------------------------
 # Set up hyperparameter schedulers
@@ -179,7 +196,7 @@ x, y, dataloader_state_dict = next(trian_loader)
 # LR scheduler
 def get_lr_multiplier(it):
     warmup_iters = round(args.warmup_ratio * num_iterations)
-    warmdown_iters = round(args.warmdown_iters * num_iterations)
+    warmdown_iters = round(args.warmdown_ratio * num_iterations)
     if it < warmup_iters:
         return (it + 1) / warmup_iters
     elif it <= num_iterations - warmdown_iters:
@@ -196,7 +213,7 @@ def get_muon_momentum(it):
 
 # Weight decay scheduler for muon
 def get_weight_decay(it):
-    return ewight_decay_scaled * (1 - it / num_iterations)
+    return weight_decay_scaled * (1 - it / num_iterations)
 
 
 
@@ -205,8 +222,140 @@ def get_weight_decay(it):
 
 # Handle this part later. Need to first understand what loop state is.
 # TODO
+if not resuming:
+    step = 0
+    val_bpb = None
+    min_val_bpb = float('inf')
+    total_training_time = 0
+else:
+    pass
 
 # -----------------------------------------------------------------------------
 # Training loop
 while True:
+    last_step = step == num_iterations
+    flops_so_far = num_flops_per_token * args.tokens_per_step * step
+
+    # eval val bpb
+    if args.eval_every > 0 and (last_step or step % args.eval_every == 0):
+        model.eval()
+        eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
+        with autocast_ctx:
+            val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+        print(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
+        if val_bpb < min_val_bpb:
+            min_val_bpb = val_bpb
+        model.train()
     
+    # estimate CORE metric with original model to avoid re-compilation (input shape constantly changes)
+    results = {}
+    if args.core_metric_every > 0 and (last_step or (step > 0) and step % args.core_metric_every == 0):
+        model.eval()
+        with autocast_ctx:
+            results = evaluate_model(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
+        print(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
+        model.train()
+    
+
+    # sample from model. Only on master process
+    if args.sample_every > 0 and master_process and (last_step or (step > 0 and step % args.sample_every == 0)):
+        model.eval()
+        prompts = [
+            "The capital of France is",
+            "The chemical symbol of gold is",
+            "If yesterday was Friday, then tomorrow will be",
+            "The opposite of hot is",
+            "The planets of the solar system are:",
+            "My favorite color is",
+            "If 5*x + 3 = 13, then x is",
+        ]
+        for prompt in prompts:
+            response = get_response(model, tokenizer, prompt, max_tokens=16)
+            print(f'Input prompt: {prompt} --> Response: {response}')
+        
+        model.train()
+    
+    if last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
+        save_checkpoint(
+            checkpoint_dir,
+            step,
+            orig_model.state_dict(),
+            [opt.state_dict() for opt in optimizers],
+            {
+                'step': step,
+                'val_pbp': val_bpb,
+                'model_config': model_kwargs_config,
+                'user_config': user_config,
+                'device_batch_size': args.device_batch_size,
+                'max_seq_len': args.max_seq_len,
+                'dataloader_state_dict': dataloader_state_dict,
+                'loop_state': {
+                    'min_val_bpb': min_val_bpb,
+                    'total_training_time': total_training_time
+                }
+            },
+            rank=ddp_rank
+        )
+    
+    if last_step:
+        break
+
+    synchronize()
+    t0 = time.time()
+    for micro_step in range(grad_accum_steps):
+        with autocast_ctx:
+            loss = model(x, y)
+        # computational graph will be saved until loss.backward is called
+        loss = loss / grad_accum_steps
+        loss.backward()
+        x, y, dataloader_state_dict = next(train_loader)
+    
+    lrm = get_lr_multiplier(step)
+    for opt in optimizers:
+        for group in opt.param_groups:
+            group['lr'] = group['initial_lr'] * lrm
+    
+    muon_momentum = get_muon_momentum(step)
+    muon_weight_decay = get_weight_decay(step)
+    for group in muon_optimizer.param_groups:
+        group['momentum'] = muon_momentum
+        group['weight_decay'] = muon_weight_decay
+    for opt in optimizers:
+        opt.step()
+    model.zero_grad(set_to_none=True) # equivalant of calling optim.zero_grad() for all optimizers. set_to_none will use less memory.
+
+    synchronize()
+    t1 = time.time()
+    dt = t1 - t0
+
+    # -------------------------------------------------------------------------
+
+    # logging (CPU action only)
+    pct_done = 100 * step / num_iterations
+    tok_per_sec = int(args.tokens_per_step / dt)
+    flops_per_sec = num_flops_per_token * args.tokens_per_step / dt
+    if step > 10:
+        total_training_time += dt # only count the time after the first 10 steps
+    # Calculate ETA based on average time per step (excluding first 10 steps)
+    steps_done = step - 10
+    if steps_done > 0:
+        avg_time_per_step = total_training_time / steps_done
+        remaining_steps = num_iterations - step
+        eta_seconds = remaining_steps * avg_time_per_step
+        eta_str = f" | eta: {eta_seconds/60:.1f}m"
+    else:
+        eta_str = ""
+    epoch = dataloader_state_dict["epoch"]
+    print(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
+
+    # state update
+    step += 1
+
+# print a few more stats
+get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
+print(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
+print(f"Total training time: {total_training_time/60:.2f}m")
+if val_bpb is not None:
+    print(f"Minimum validation bpb: {min_val_bpb:.6f}")
+    
+

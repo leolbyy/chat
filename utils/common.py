@@ -48,4 +48,4 @@ def compute_init(device_type="cuda"):
     else:
         device = torch.device(device_type)
     
-    return is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size
+    return is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size, device

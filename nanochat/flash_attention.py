@@ -21,7 +21,7 @@ def _load_flash_attention_3():
 _fa3 = _load_flash_attention_3()
 
 
-def flash_attn_func(q, k, v, casual=True, window_size=(-1, 0)):
+def flash_attn_func(q, k, v, causal=True, window_size=(-1, 0)):
     if _fa3 is not None:
         return _fa3.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
     
@@ -35,9 +35,9 @@ def flash_attn_func(q, k, v, casual=True, window_size=(-1, 0)):
     window = window_size[0]
 
     if window < 0 or window >= seq_len:
-        return F.scaled_dot_product_attention(q, k, v, causal=True, enable_gqa=enable_gqa)
+        return F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
     if seq_len == 1:
-        return F.scaled_dot_product_attention(q, k, v, causal=False, enable_gqa=enable_gqa)
+        return F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
 
     mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=device))
     row_idx = torch.arange(seq_len, device=device).unsqueeze(1)

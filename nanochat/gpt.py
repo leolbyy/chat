@@ -4,15 +4,21 @@ from functools import partial
 from dataclasses import dataclass
 
 import torch
+from torch import Tensor
+from torch import nn
 import torch.nn
 import torch.nn.functional as F
 
+from utils.common import get_dist_info
+
 from nanochat.flash_attention import flash_attn
+from nanochat.adamw import DistAdamW
+from nanochat.muon import Muon, DistMuon
 
 
 @dataclass
 class GPTConfig:
-    sequence_len: int = 1024
+    seq_len: int = 1024
     vocab_size: int = 50304 
     n_layer: int = 12
     n_head: int = 6
@@ -20,7 +26,7 @@ class GPTConfig:
     n_embd: int = 768
 
 # Just implement here. Should not be used as it not as efficient as the pytorch native implementation.
-class MyRMSNorm(nn.Module):
+class MyRMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float):
         super().__init__()
         self.eps = eps
@@ -38,7 +44,7 @@ def my_attention(q, k, v, enable_gqa=False):
     assert k.size == v.size
     assert q.shape(-2) <= k.shape(-2)
     
-    attention_mask = torch.ones(q.shape(-2), k.shape(-2), dtype=q.dtype. device=q.device).triu(k.shape(-2) - q.shape(-2) + 1)
+    attention_mask = torch.ones(q.shape(-2), k.shape(-2), dtype=q.dtype, device=q.device).triu(k.shape(-2) - q.shape(-2) + 1)
     attention_mask = attention_mask.masked_fill(attention_mask == 1, -float('inf'))
 
     scale_factor = 1 / math.sqrt(q.size(-1))
@@ -51,7 +57,7 @@ def my_attention(q, k, v, enable_gqa=False):
 
     attention_score = q @ k * scale_factor
     attention_score = attention_score + attention_mask
-    attention_score = torch.softmax(attetnion_score)
+    attention_score = torch.softmax(attetnion_score, dim=-1)
 
     return attention_score @ v
 
@@ -79,7 +85,7 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
-        self.head_dim = self.embd // self.n_head
+        self.head_dim = self.n_embd // self.n_head
 
         assert self.n_embd % self.n_head == 0 # Make sure sum of heads equal to original dim
         assert self.n_kv_head <= self.n_head
@@ -109,7 +115,7 @@ class CausalSelfAttention(nn.Module):
         # window_size is (left, right) tuple: (N, 0) for causal, (-1, 0) for full context
         if kv_cache is None:
             # Training: causal attention with optional sliding window
-            y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+            y = flash_attn.flash_attn_func(q, k, v, causal=True)
         else:
             # Inference: use flash_attn_with_kvcache which handles cache management
             k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
@@ -118,7 +124,6 @@ class CausalSelfAttention(nn.Module):
                 k=k, v=v,
                 cache_seqlens=kv_cache.cache_seqlens,
                 causal=True,
-                window_size=window_size,
             )
             # Advance position after last layer processes
             if self.layer_idx == kv_cache.n_layers - 1:
@@ -135,7 +140,7 @@ class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.c_proj = nn.Lnear(4 * config.n_embd, config.n_embd, bias=False)
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -151,7 +156,7 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, layer_idx)
         self.mlp = MLP(config)
     
-    def forward(self, x):
+    def forward(self, x, cos_sin, kv_cache):
         x = x + self.attn(norm(x), cos_sin, kv_cache)
         x = x + self.mlp(norm(x))
 
@@ -163,7 +168,7 @@ class GPT(nn.Module):
         self.config = config
 
         # pad vocab size to be divisible by world_size.
-        padded_vocab_size - ((config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to) * pad_vocab_size_to
+        padded_vocab_size = ((config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to) * pad_vocab_size_to
         if padded_vocab_size != config.vocab_size:
             pass # TODO logging
         
@@ -184,8 +189,9 @@ class GPT(nn.Module):
 
 
         self.rotary_seq_len = config.seq_len * 10
+        self.max_seq_len = self.rotary_seq_len # TODO
         head_dim = config.n_embd // config.n_head
-        cos, sin = self._precompute_rotary_embeddings(self, rotary_seq_len, head_dim)
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -206,14 +212,15 @@ class GPT(nn.Module):
             torch.nn.init.zeros_(block.mlp.c_proj.weight)
 
         self.resid_lambdas.fill_(1.0)
-        self.x0_lamdbas.fill_(0.0)
+        self.x0_lambdas.fill_(0.0)
         
-        head_dim = self.config.n_embed // self.config.n_head
+        head_dim = self.config.n_embd // self.config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.cos, self.sin = cos, sin
 
-        if self.transformer.wte.weight.device.type == 'cuda':
-            self.transformer.wte.to(dtype=torch.bfloat16)
+        # if self.transformer.wte.weight.device.type == 'cuda':
+        #     self.transformer.wte.to(dtype=torch.bfloat16)
+        self.transformer.wte.to(dtype=torch.bfloat16)
 
     
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
@@ -251,7 +258,7 @@ class GPT(nn.Module):
         nparams = sum(p.numel() for p in self.parameters())
         nparams_embedding = self.transformer.wte.weight.numel()
         l, h, q, t = self.config.n_layer, self.config.n_head, self.config.n_embd // self.config.n_head, self.config.seq_len
-        num_flops_per_token = 6 * (n_params - nparams_embedding) + 12 * l * h * q * t # need seq_len becuase self attention need to calculate with all tokens in seq
+        num_flops_per_token = 6 * (nparams - nparams_embedding) + 12 * l * h * q * t # need seq_len becuase self attention need to calculate with all tokens in seq
         return num_flops_per_token
     
     def num_scaling_params(self):
@@ -262,21 +269,21 @@ class GPT(nn.Module):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
         matrix_params = list(self.transformer.h.parameters())
-        embedding_params = list(self.transformer.wte.parameters)
+        embedding_params = list(self.transformer.wte.parameters())
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
-        x0_params = [self.x0_lamdbas]
+        x0_params = [self.x0_lambdas]
         assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(resid_params) + len(x0_params)
     
-        dmodel_lr_scale = (model / 768) ** -0.5
+        dmodel_lr_scale = (model_dim / 768) ** -0.5
 
         AdamWFactory = DistAdamW if ddp else partial(torch.optim.AdamW, fused=True)
         adamw_kwargs = dict(betas=adam_betas, eps=1e-10, weight_decay=0.0)
         adamw_groups = [
             dict(params=embedding_params, lr=embedding_lr * dmodel_lr_scale),
             dict(params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale),
-            dict(params=resid_params, lr=scalr_lr * 0.01), # resid is very sensitive, so use a small lr
-            dict(params=x0_params, lr=scalr_lr)
+            dict(params=resid_params, lr=scalar_lr * 0.01), # resid is very sensitive, so use a small lr
+            dict(params=x0_params, lr=scalar_lr)
         ]
         adamw_optimizer = AdamWFactory(adamw_groups, **adamw_kwargs)
 
@@ -291,7 +298,7 @@ class GPT(nn.Module):
         return optimizers
 
 
-    def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
+    def forward(self, idx, targets=None, kv_cache=None, seqlens=None, loss_reduction='mean'):
         B, T = idx.size()
 
         # Grab the rotary embeddings for the current sequence length (they are of the shape (1, seq_len, 1, head_dim // 2))
@@ -306,11 +313,10 @@ class GPT(nn.Module):
         x = norm(x)
         x0 = x
         for i, layer in enumerate(self.transformer.h):
-            x = self.resid_lambdas[i] * x + self.x0_lamdbas[i] * x0
+            x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             x = layer(x, cos_sin, kv_cache)
         x = norm(x)
-        x = self.lm_head(x)
-
+        
         softcap = 15
         logits = self.lm_head(x) # [bs, seq_len, vocab_size] 
         logits = logits[..., :self.config.vocab_size] # remove padding
@@ -325,33 +331,31 @@ class GPT(nn.Module):
         else:
             return logits
         
-        @torch.inference_mode()
-        def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
-            # TODO Implement my own version of batched inference, with KV Cache support
-            assert isinstance(tokens, list)
+    @torch.inference_mode()
+    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
+        # TODO Implement my own version of batched inference, with KV Cache support
+        assert isinstance(tokens, list)
 
-            device = self.get_device()
-            rng = None
-            if temperature > 0:
-                rng = torch.Generator(device=device)
-                rng.manual_seed(seed)
+        device = self.get_device()
+        rng = None
+        if temperature > 0:
+            rng = torch.Generator(device=device)
+            rng.manual_seed(seed)
+        
+        ids = torch.tensor([tokens], dtype=torch.long, device=device)
+        for _ in range(max_tokens):
+            logits = self.forward(ids)
+            logits = logits[:, -1:, :]
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('inf')
             
-            ids = torch.tensor([tokens], dtype=torch.long, device=device)
-            for _ in range(max_tokens):
-                logits = self.forward(ids)
-                logits = logits[:, -1:, :]
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float('inf')
-                
-                if temperature > 0:
-                    logits = logits / temperature
-                    probs = torch.softmax(logits)
-                    next_ids = torch.multinomial(probs, num_samples=1, generator=rng)
-                else:
-                    next_ids = torch.argmax(logits, dim=-1, keepdim=True)
-                ids = torch.cat((ids, next_ids), dim=1)
-                token = next_ids.item()
-                yield token
-
-
+            if temperature > 0:
+                logits = logits / temperature
+                probs = torch.softmax(logits)
+                next_ids = torch.multinomial(probs, num_samples=1, generator=rng)
+            else:
+                next_ids = torch.argmax(logits, dim=-1, keepdim=True)
+            ids = torch.cat((ids, next_ids), dim=1)
+            token = next_ids.item()
+            yield token

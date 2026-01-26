@@ -1,6 +1,7 @@
 import os
+import torch
 import pyarrow.parquet as pq
-from utils.common import get_base_dir
+from utils.common import get_base_dir, get_dist_info
 
 
 BASE_DIR = get_base_dir()
@@ -96,7 +97,7 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
                         best_idx = i
                         best_len = len(doc)
                 if best_idx >= 0:
-                    doc = doc_buffer.pop(bext_idx)
+                    doc = doc_buffer.pop(best_idx)
                     row.extend(doc)
                 else: # no doc can fit in the remaining space
                     shortest_idx = min(range(len(doc_buffer)), key=lambda x: len(doc_buffer[x]))
@@ -108,7 +109,7 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
         inputs = batch_tensor[:, :-1].to(device=device, non_blocking=use_cuda)
         targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda)
-    yield inputs, targets, {"pf_idx": pf_idx, "rg_idx": rg_idx, "epoch": epoch}
+        yield inputs, targets, {"pf_idx": pf_idx, "rg_idx": rg_idx, "epoch": epoch}
 
 
 

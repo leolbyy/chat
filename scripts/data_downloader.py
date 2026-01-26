@@ -3,10 +3,13 @@ import requests
 import time
 import argparse
 import logging
+import shutil
+import tempfile
+import zipfile
+import urllib.request
 from multiprocessing.pool import ThreadPool as Pool
 import pyarrow.parquet as pq
 from utils.common import get_base_dir
-
 
 
 def download_single_file(index):
@@ -49,29 +52,70 @@ def download_single_file(index):
                 logger.warning(f'Download {filename} failed for all {MAX_ATTEMPTS}. Skipping.')
                 return False
 
+def place_eval_bundle(filepath, destination):
+    # here file_path is the path to the eval_bundle.zip file
+    # we need to unzip it and place it in the base directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(filepath, 'r') as zip_ref:
+            zip_ref.extractall(tmpdir)
+        extracted_bundle_dir = os.path.join(tmpdir, "eval_bundle")
+        shutil.move(extracted_bundle_dir, destination)
+    print(f"Placed eval_bundle directory at {destination}")
+
+
+
+def download_eval_bundle(DATA_DIR):
+    URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip"
+    filename = 'eval_bundel.zip'
+
+    print(f'Downloading eval bundle from {URL}')
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpfile = os.path.join(tmpdir, filename)
+        with urllib.request.urlopen(URL) as response:
+            content = response.read()
+        with open(tmpfile, 'wb') as f:
+            f.write(content)
+        with zipfile.ZipFile(tmpfile, 'r') as zip_ref:
+            zip_ref.extractall(tmpdir)
+        extracted_bundle_dir = os.path.join(tmpdir, 'eval_bundle')
+        shutil.move(extracted_bundle_dir, DATA_DIR)
+
+    print(f"Downloaded to {os.path.join(BASE_DIR, 'eval_bundle')}")
+
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Download FineWeb-Edu 100BT dataset shards')
     parser.add_argument('-n', '--num-files', type=int, default=-1, help='Number of shards to download. -1 = disable. (Default: -1)')
     parser.add_argument('-t', '--num-threads', type=int, default=16, help='Number of threads to download the files. (default: 16)')
+    parser.add_argument('--type', type=str, default='train', help='Type of data to download. train: training data. eval: evaluation data. eval will ignore num-files and num-threads arguemnts. (default: train)')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     BASE_DIR = get_base_dir()
-    DATA_DIR = os.path.join(BASE_DIR, 'data')
-    os.makedirs(DATA_DIR, exist_ok=True)
-    BASE_URL = "https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
-    MAX_SHARD = 1822
-    MAX_ATTEMPTS = 5
-    WAIT_TIME = 3
 
-    num_files = MAX_SHARD + 1 if args.num_files == -1 else min(args.num_files, MAX_SHARD + 1)
-    ids_to_download = list(range(num_files))
+    if args.type == 'train':
+        DATA_DIR = os.path.join(BASE_DIR, 'data')
+        os.makedirs(DATA_DIR, exist_ok=True)
+        BASE_URL = "https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
+        MAX_SHARD = 1822
+        MAX_ATTEMPTS = 5
+        WAIT_TIME = 3
 
-    logger.info(f"Downloading {len(ids_to_download)} shards using {args.num_threads} threads...")
-    with Pool(processes=args.num_threads) as pool:
-        results = pool.map(download_single_file, ids_to_download)
+        num_files = MAX_SHARD + 1 if args.num_files == -1 else min(args.num_files, MAX_SHARD + 1)
+        ids_to_download = list(range(num_files))
 
-    successful = sum(1 for success in results if success)
-    logger.info(f'Done! Downloaded {successful}/{num_files} shards to {DATA_DIR}')   
+        logger.info(f"Downloading {len(ids_to_download)} shards using {args.num_threads} threads...")
+        with Pool(processes=args.num_threads) as pool:
+            results = pool.map(download_single_file, ids_to_download)
+
+        successful = sum(1 for success in results if success)
+        logger.info(f'Done! Downloaded {successful}/{num_files} shards to {DATA_DIR}')   
+    elif args.type == 'eval':
+        # DATA_DIR = os.path.join(BASE_DIR, 'eval_bundle')
+        # os.makedirs(DATA_DIR, exist_ok=True)
+        download_eval_bundle(BASE_DIR)
+    else:
+        raise ValueError(f"Unspported type of data {args.type}. Available options: train | eval")
