@@ -2,6 +2,7 @@ import os
 import csv
 import yaml
 import random
+import json
 from jinja2 import Template
 
 import torch
@@ -150,8 +151,8 @@ def forward_model(model, input_ids):
     logits = model(input_ids)
 
     losses = torch.nn.functional.cross_entropy(
-        logits.view(-1),
-        target_ids.view(-1),
+        logits.view(bs * seq_len, -1),
+        target.view(bs * seq_len),
         reduction='none'
     ).view(bs, seq_len)
 
@@ -167,7 +168,7 @@ def evaluate_single(idx, model, tokenizer, data, device, task_meta):
     item = data[idx]
 
     task_type = task_meta['task_type']
-    num_fewshot = task_meta['task_fewshot']
+    num_fewshot = task_meta['num_fewshot']
     continuation_delimiter = task_meta['continuation_delimiter']
 
     fewshot_examples = []
@@ -205,9 +206,9 @@ def evaluate_single(idx, model, tokenizer, data, device, task_meta):
                 new_tokens.append(t)
                 new_start_idxs.append(s)
                 new_end_idxs.append(e)
-        tokens, start_idxs, end_idxs - new_tokens, new_start_idxs, new_end_idxs
+        tokens, start_idxs, end_idxs = new_tokens, new_start_idxs, new_end_idxs
     
-    pad_token_id = tokenizer.get_bos_token_id # Is it ok to use bos as padding token?
+    pad_token_id = tokenizer.get_bos_token_id() # Is it ok to use bos as padding token?
     input_ids = stack_sequences(tokens, pad_token_id)
     input_ids = input_ids.to(device)
 
@@ -220,10 +221,10 @@ def evaluate_single(idx, model, tokenizer, data, device, task_meta):
 
         predicted_tokens = predictions[0, si - 1: ei - 1]
         actual_tokens = input_ids[0, si: ei]
-        is_correct = torch.all(predicted_tokens == actual_tokens).items()
+        is_correct = torch.all(predicted_tokens == actual_tokens).item()
     elif task_type in ['multiple_choice', 'schema']:
         mean_losses = [losses[i, si - 1: ei - 1].mean().item() 
-                            for i in (si, ei) in enumerate(zip(start_idxs, end_idxs))]
+                            for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
         pred_idx = mean_losses.index(min(mean_losses))
         is_correct = pred_idx == int(item['gold'])
     
@@ -240,7 +241,7 @@ def evaluate_task(model, tokenizer, data, device, task_meta):
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    correct = torch.zeros(len(data), dtype=torch.int64, device=device)
+    correct = torch.zeros(len(data), dtype=torch.float32, device=device)
 
     for idx in range(rank, len(data), world_size):
         is_correct = evaluate_single(idx, model, tokenizer, data, device, task_meta)
@@ -255,7 +256,7 @@ def evaluate_task(model, tokenizer, data, device, task_meta):
 
 
 
-def evaluate_model(model, tokenizer, deivce, max_per_task=-1):
+def evaluate_model(model, tokenizer, device, max_per_task=-1):
     base_dir = get_base_dir()
     eval_bundle_dir = os.path.join(base_dir, 'eval_bundle')
     assert os.path.exists(eval_bundle_dir), f'eval bundle is expected to locate at {eval_bundle_dir}. Make sure you have downloaded it via data_downloader script'
@@ -290,7 +291,7 @@ def evaluate_model(model, tokenizer, deivce, max_per_task=-1):
         }
         print(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})...", end='')
 
-        data_path = os.path.join(eval_bundle_dir, task_meta['uri'])
+        data_path = os.path.join(eval_bundle_dir, 'eval_data', task_meta['dataset_uri'])
         with open(data_path, 'r', encoding='UTF-8') as f:
             data = [json.loads(line.strip()) for line in f]
         
