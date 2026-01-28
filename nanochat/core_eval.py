@@ -285,7 +285,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
         task_meta = {
             'task_type': task['icl_task_type'],
             'dataset_uri': task['dataset_uri'],
-            'num_fewshot': min(task['num_fewshot'][0], 1),
+            'num_fewshot': task['num_fewshot'][0],
             'continuation_delimiter': task.get('continuation_delimiter', ' ')
         }
         print(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})...", end='')
@@ -309,8 +309,9 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
 
         end_time = time.time()
         print(f'accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {end_time - start_time:.2f}s')
-        gc.collect()
-        torch.cuda.empty_cache()
+    
+    # empty cache after core eval is done
+    torch.cuda.empty_cache()
 
     core_metric = sum(centered_results.values()) / len(centered_results)
     out = {
