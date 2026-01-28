@@ -244,13 +244,12 @@ def evaluate_task(model, tokenizer, data, device, task_meta):
 
     for idx in range(rank, len(data), world_size):
         is_correct = evaluate_single(idx, model, tokenizer, data, device, task_meta)
-        correct[idx] = int(is_correct)
+        correct[idx] = float(is_correct)
 
     if world_size > 1:
         dist.barrier() # reduandant
         dist.all_reduce(correct, op=dist.ReduceOp.SUM)
     mean_correct = correct.mean().item()
-    print(mean_correct) # This line fixes cuda out of memory
     return mean_correct
 
 
@@ -286,7 +285,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
         task_meta = {
             'task_type': task['icl_task_type'],
             'dataset_uri': task['dataset_uri'],
-            'num_fewshot': task['num_fewshot'][0],
+            'num_fewshot': min(task['num_fewshot'][0], 1),
             'continuation_delimiter': task.get('continuation_delimiter', ' ')
         }
         print(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})...", end='')
@@ -311,6 +310,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
         end_time = time.time()
         print(f'accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {end_time - start_time:.2f}s')
         gc.collect()
+        torch.cuda.empty_cache()
 
     core_metric = sum(centered_results.values()) / len(centered_results)
     out = {

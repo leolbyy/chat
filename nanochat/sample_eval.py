@@ -17,8 +17,3 @@ def get_response(model, tokenizer, prompt, max_tokens):
             output.append(next_token)
     output_str = tokenizer.decode(output)
     return output_str
-    
-
-        
-        
-
