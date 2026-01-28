@@ -210,5 +210,6 @@ __marimo__/
 
 # Project
 data/
-tokenizer/
+# tokenizer/
+base_checkpoints
 eval_bundle/
