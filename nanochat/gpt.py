@@ -345,14 +345,14 @@ class GPT(nn.Module):
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
         for _ in range(max_tokens):
             logits = self.forward(ids)
-            logits = logits[:, -1:, :]
+            logits = logits[:, -1, :]
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float('inf')
             
             if temperature > 0:
                 logits = logits / temperature
-                probs = torch.softmax(logits)
+                probs = torch.softmax(logits, dim=-1)
                 next_ids = torch.multinomial(probs, num_samples=1, generator=rng)
             else:
                 next_ids = torch.argmax(logits, dim=-1, keepdim=True)

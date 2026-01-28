@@ -1,4 +1,6 @@
 import os
+import json
+
 import torch
 
 def save_checkpoint(
@@ -20,8 +22,8 @@ def save_checkpoint(
             json.dump(metadata, f, indent=4)
         
     # optimizer state is NOT shared across rank due to ZeRo-2 style distributed optmizer
-    optimizer_path = os.path.join(checkpoint_dir, f'optmizer_{step:06d}_rank{rank:02d}.pt')
-    torch.save(optimizer_stata_dict_list, optimizer_path)
+    optimizer_path = os.path.join(checkpoint_dir, f'optimizer_{step:06d}_rank{rank:02d}.pt')
+    torch.save(optimizer_state_dict_list, optimizer_path)
 
 
 def load_checkpoint(
@@ -34,7 +36,7 @@ def load_checkpoint(
     model_path = os.path.join(checkpoint_dir, f'model_{step:06d}.pt')
     model_data = torch.load(model_path, map_location=device)
     if load_optimizer: # for training
-        optimizer_path = os.path.join(checkpoint_dir, f'topmizer_{step:06d}_rank{rank:02d}.pt')
+        optimizer_path = os.path.join(checkpoint_dir, f'optimizer_{step:06d}_rank{rank:02d}.pt')
         optimizer_data = torch.load(optimizer_path, map_location=device)
     else:
         optimizer_data = None

@@ -1,8 +1,10 @@
 import os
+import gc
 import csv
 import yaml
 import random
 import json
+import time
 from jinja2 import Template
 
 import torch
@@ -234,14 +236,11 @@ def evaluate_single(idx, model, tokenizer, data, device, task_meta):
     return is_correct
 
 
-
-
-
 def evaluate_task(model, tokenizer, data, device, task_meta):
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    correct = torch.zeros(len(data), dtype=torch.float32, device=device)
+    correct = torch.zeros(len(data), dtype=torch.float32, device=device) # can not be int. Mean operation will be conducted on correct, and torch mean only accept float / complex
 
     for idx in range(rank, len(data), world_size):
         is_correct = evaluate_single(idx, model, tokenizer, data, device, task_meta)
@@ -249,8 +248,9 @@ def evaluate_task(model, tokenizer, data, device, task_meta):
 
     if world_size > 1:
         dist.barrier() # reduandant
-        dist.all_reduce(coorect, op=dist.ReduceOp.SUM)
+        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
     mean_correct = correct.mean().item()
+    print(mean_correct) # This line fixes cuda out of memory
     return mean_correct
 
 
@@ -281,7 +281,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
     centered_results = {}
 
     for task in tasks:
-        # start_time = time.time()
+        start_time = time.time()
         label = task['label']
         task_meta = {
             'task_type': task['icl_task_type'],
@@ -291,7 +291,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
         }
         print(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})...", end='')
 
-        data_path = os.path.join(eval_bundle_dir, 'eval_data', task_meta['dataset_uri'])
+        data_path = os.path.join(data_base_path, task_meta['dataset_uri'])
         with open(data_path, 'r', encoding='UTF-8') as f:
             data = [json.loads(line.strip()) for line in f]
         
@@ -302,3 +302,23 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
             data = data[:max_per_task]
         
         accuracy = evaluate_task(model, tokenizer, data, device, task_meta)
+
+        results[label] = accuracy
+        random_baseline = random_baselines[label]
+        centered_result = (accuracy - 0.01 * random_baseline) / (1.0 - 0.01 * random_baseline)
+        centered_results[label] = centered_result
+
+        end_time = time.time()
+        print(f'accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {end_time - start_time:.2f}s')
+        gc.collect()
+
+    core_metric = sum(centered_results.values()) / len(centered_results)
+    out = {
+        'results': results,
+        'centered_results': centered_results,
+        'core_metric': core_metric
+    }
+    return out
+
+
+

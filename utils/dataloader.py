@@ -70,13 +70,13 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
         epoch = resume_state_dict['epoch']
     else:
         pf_idx = 0
-        start = ddp_rank
+        rg_idx = ddp_rank
         epoch = 0
     
     step = ddp_world_size
     
     row_capacity = T + 1
-    batches = load_text(split, pf_idx=pf_idx, start=start, step=step, epoch=epoch, tokenizer_batch_size=tokenizer_batch_size)
+    batches = load_text(split, pf_idx=pf_idx, start=rg_idx, step=step, epoch=epoch, tokenizer_batch_size=tokenizer_batch_size)
     bos_token = tokenizer.get_bos_token_id()
     doc_buffer = []
 

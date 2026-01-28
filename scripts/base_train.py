@@ -118,9 +118,9 @@ if args.depth != 12:
 # Initialize the Model
 
 # Create a new model with random weights
-model_kwargs_config = dict(seq_len=args.max_seq_len, vocab_size=vocab_size, n_layer=args.depth, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
+model_config_kwargs = dict(seq_len=args.max_seq_len, vocab_size=vocab_size, n_layer=args.depth, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
 with torch.device("meta"):
-    model_config = GPTConfig(**model_kwargs_config)
+    model_config = GPTConfig(**model_config_kwargs)
     model = GPT(model_config)
 model.to_empty(device=device) # All tensors got storage on target device but with garbage data (any data that was previously in the allocated memory)
 
@@ -131,7 +131,7 @@ checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
 resuming = args.resume_from_step != -1
 if resuming:
     print(f'Resume from step {args.resume_from_step}')
-    model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, args.resume_from_step, load_optimizer=True, rank=ddp_rank)
+    model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, args.resume_from_step, device=device, load_optimizer=True, rank=ddp_rank)
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data
 else:
@@ -155,7 +155,7 @@ elif args.target_flops > 0:
     num_iterations = round(args.target_flops / (num_flops_per_token * args.tokens_per_step))
     print(f'Using taget flops to get number of iterations: {num_iterations}')
 elif args.target_param_data_ratio > 0:
-    num_iterations = round(num_scaling_params * target_param_data_ratio / args.tokens_per_step)
+    num_iterations = round(num_scaling_params * args.target_param_data_ratio / args.tokens_per_step)
     print(f"Calculated number of iterations using target param data ratio: {num_iterations}")
 else:
     raise ValueError("Number of itertaions cannot be determined. Please specify one of (num-iterations, target-flops, target-param-data-ratio)")
@@ -228,7 +228,11 @@ if not resuming:
     min_val_bpb = float('inf')
     total_training_time = 0
 else:
-    pass
+    step = meta_data['step']
+    val_bpb = meta_data['val_bpb']
+    min_val_bpb = meta_data['loop_state']['min_val_bpb']
+    total_training_time = meta_data['loop_state']['total_training_time']
+
 
 # -----------------------------------------------------------------------------
 # Training loop
@@ -269,9 +273,10 @@ while True:
             "My favorite color is",
             "If 5*x + 3 = 13, then x is",
         ]
-        for prompt in prompts:
-            response = get_response(model, tokenizer, prompt, max_tokens=16)
-            print(f'Input prompt: {prompt} --> Response: {response}')
+        with autocast_ctx:
+            for prompt in prompts:
+                response = get_response(model, tokenizer, prompt, max_tokens=16)
+                print(f'Input prompt: {prompt} --> Response: {response}')
         
         model.train()
     
@@ -283,8 +288,8 @@ while True:
             [opt.state_dict() for opt in optimizers],
             {
                 'step': step,
-                'val_pbp': val_bpb,
-                'model_config': model_kwargs_config,
+                'val_bpb': val_bpb,
+                'model_config': model_config_kwargs,
                 'user_config': user_config,
                 'device_batch_size': args.device_batch_size,
                 'max_seq_len': args.max_seq_len,
