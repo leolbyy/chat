@@ -213,14 +213,21 @@ class GPT(nn.Module):
 
         self.resid_lambdas.fill_(1.0)
         self.x0_lambdas.fill_(0.0)
-        
-        head_dim = self.config.n_embd // self.config.n_head
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
-        self.cos, self.sin = cos, sin
 
         # if self.transformer.wte.weight.device.type == 'cuda':
         #     self.transformer.wte.to(dtype=torch.bfloat16)
         self.transformer.wte.to(dtype=torch.bfloat16)
+    
+    @torch.no_grad()
+    def init_buffer(self):
+        """
+        This function serves to init RoPE. 
+        We move rope initialization from init_weight to here so that later when loading checkpoints, 
+        we don't need to run init weight.
+        """
+        head_dim = self.config.n_embd // self.config.n_head
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
+        self.cos, self.sin = cos, sin
 
     
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):

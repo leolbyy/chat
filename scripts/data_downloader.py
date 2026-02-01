@@ -52,17 +52,6 @@ def download_single_file(index):
                 logger.warning(f'Download {filename} failed for all {MAX_ATTEMPTS}. Skipping.')
                 return False
 
-def place_eval_bundle(filepath, destination):
-    # here file_path is the path to the eval_bundle.zip file
-    # we need to unzip it and place it in the base directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with zipfile.ZipFile(filepath, 'r') as zip_ref:
-            zip_ref.extractall(tmpdir)
-        extracted_bundle_dir = os.path.join(tmpdir, "eval_bundle")
-        shutil.move(extracted_bundle_dir, destination)
-    print(f"Placed eval_bundle directory at {destination}")
-
-
 
 def download_eval_bundle(DATA_DIR):
     URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip"
@@ -80,8 +69,37 @@ def download_eval_bundle(DATA_DIR):
         extracted_bundle_dir = os.path.join(tmpdir, 'eval_bundle')
         shutil.move(extracted_bundle_dir, DATA_DIR)
 
-    print(f"Downloaded to {os.path.join(BASE_DIR, 'eval_bundle')}")
+    print(f"Downloaded to {os.path.join(DATA_DIR, 'eval_bundle')}")
 
+def download_word_list(DATA_DIR):
+    URL = 'https://raw.githubusercontent.com/dwyl/english-words/refs/heads/master/words_alpha.txt'
+    filename = 'words_alpha.txt'
+
+    print(f'Downloading {filename} from {URL}')
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpfile = os.path.join(tmpdir, filename)
+        with urllib.request.urlopen(URL) as response:
+            content = response.read()
+        with open(tmpfile, 'wb') as f:
+            f.write(content)
+        shutil.move(tmpfile, DATA_DIR)
+
+    print(f"Downloaded to {os.path.join(DATA_DIR, filename)}")
+
+def download_personality(DATA_DIR):
+    URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl"
+    filename = 'identity_conversations.jsonl'
+
+    print(f'Downloading {filename} from {URL}')
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpfile = os.path.join(tmpdir, filename)
+        with urllib.request.urlopen(URL) as response:
+            content = response.read()
+        with open(tmpfile, 'wb') as f:
+            f.write(content)
+        shutil.move(tmpfile, DATA_DIR)
+
+    print(f"Downloaded to {os.path.join(DATA_DIR, filename)}")
 
 
 
@@ -117,5 +135,9 @@ if __name__ == '__main__':
         # DATA_DIR = os.path.join(BASE_DIR, 'eval_bundle')
         # os.makedirs(DATA_DIR, exist_ok=True)
         download_eval_bundle(BASE_DIR)
+    elif args.type == 'spell':
+        download_word_list(BASE_DIR)
+    elif args.type == 'personality':
+        download_personality(BASE_DIR)
     else:
-        raise ValueError(f"Unspported type of data {args.type}. Available options: train | eval")
+        raise ValueError(f"Unspported type of data {args.type}. Available options: train | eval | spell | personality")

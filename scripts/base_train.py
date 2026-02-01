@@ -76,7 +76,7 @@ tokenizer_dir = os.path.join(base_dir, 'tokenizer')
 tokenizer = get_tokenizer(tokenizer_dir)
 vocab_size = tokenizer.get_vocab_size()
 print(f"Tokenizer vocab size: {vocab_size}")
-token_bytes = get_token_bytes(device=device)
+token_bytes = get_token_bytes(tokenizer_dir, device=device)
 
 # Model kwargs
 model_dim = args.depth * args.aspect_ratio
@@ -123,6 +123,7 @@ with torch.device("meta"):
     model_config = GPTConfig(**model_config_kwargs)
     model = GPT(model_config)
 model.to_empty(device=device) # All tensors got storage on target device but with garbage data (any data that was previously in the allocated memory)
+model.init_buffer() # init RoPE
 
 # If resuming, overwrite model parameters
 base_dir = get_base_dir()
@@ -221,7 +222,6 @@ def get_weight_decay(it):
 # Loop state (variables updated by the training loop)
 
 # Handle this part later. Need to first understand what loop state is.
-# TODO
 if not resuming:
     step = 0
     val_bpb = None
