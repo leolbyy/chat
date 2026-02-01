@@ -112,6 +112,77 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
         yield inputs, targets, {"pf_idx": pf_idx, "rg_idx": rg_idx, "epoch": epoch}
 
 
+def get_task_example(dataset, task_idx, idx, step, tokenizer_batch_size):
+    num_examples = dataset.get_num_examples()
+    num_exmaples_total = dataset.get_num_examples_total()
+    epoch = 0
+    while True:
+        examples = []
+        while len(examples) < tokenizer_batch_size:
+            if idx >= num_examples[task_idx]:
+                idx = idx - num_examples[task_idx]
+                task_idx += 1
+                if task_idx >= len(num_examples):
+                    task_idx = 0
+                    epoch += 1
+            examples.append(num_examples.get_example(task_idx, idx))
+        progress = (sum(num_examples[:task_idx]) + idx) / num_exmaples_total
+        yield examples, epoch, progress
+
+
+
+def distributed_task_data_loader(
+    tokenizer,
+    B, T,
+    dataset,
+    tokenizer_threads=4,
+    tokenizer_batch_size=128,
+    device="cuda",
+    buffer_size=1000
+):
+
+    ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
+    task_idx = 0
+    idx = ddp_rank
+    epoch = 0
+    
+    step = ddp_world_size
+    
+    row_capacity = T + 1
+    batches = get_task_example(dataset, task_idx, idx, tokenizer_batch_size)
+    bos_token = tokenizer.get_bos_token_id()
+    doc_buffer = []
+
+    while True:
+        rows = []
+        for _ in range(B):
+            row = []
+            while len(row) < row_capacity:
+                while len(doc_buffer) < buffer_size:
+                    doc_batch, epcoh, progress = next(batches)
+                    token_lists = tokenizer.encode(doc_batch, prepend=bos_token, num_threads=tokenizer_threads)
+                    doc_buffer.extend(token_lists)
+                remaining = row_capacity - len(row)
+                best_idx = -1
+                best_len = 0
+                for i, doc in enumerate(doc_buffer):
+                    if len(doc) <= remaining and len(doc) > best_len:
+                        best_idx = i
+                        best_len = len(doc)
+                if best_idx >= 0:
+                    doc = doc_buffer.pop(best_idx)
+                    row.extend(doc)
+                else: # no doc can fit in the remaining space
+                    shortest_idx = min(range(len(doc_buffer)), key=lambda x: len(doc_buffer[x]))
+                    doc = doc_buffer.pop(shortest_idx)
+                    row.extend(doc[:remaining])
+            rows.append(row)
+        
+        use_cuda = device == "cuda"
+        batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
+        inputs = batch_tensor[:, :-1].to(device=device, non_blocking=use_cuda)
+        targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda)
+        yield inputs, targets, epoch, progress
 
 
 
