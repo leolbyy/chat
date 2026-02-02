@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import random
 from utils.common import get_base_dir
 from datasets import load_dataset
 
@@ -65,7 +67,6 @@ class GSM8K(Task):
         super().__init__(split)
         assert subset in ('main', 'socratic')
         self.ds = load_dataset('openai/gsm8k', subset, split=split).shuffle(seed=2026)
-        self.ans_re = re.compile(r"#### (\-?[0-9\.\,]+)")
     
     def get_example(self, idx):
         example = self.ds[idx]
@@ -75,7 +76,7 @@ class GSM8K(Task):
         question = ''.join(re.split(r'<<|>>', question))
         question += '\n'
         answer = ''.join(re.split(r'<<|>>', answer))
-        answer, _ = ans_re.search(answer)
+        # answer, _ = ANS_RE.search(answer)
 
         # render into conversation
         messages = [{'content': question, 'role': 'user'}, {'content': answer, 'role': 'assistant'}]
@@ -85,9 +86,9 @@ class MMLU(Task):
     def __init__(self, subset, split):
         super().__init__(split)
         assert subset in ('all', 'auxiliary_train')
-        self.ds = load_dataset('cais/mmlu', subset, split=split)
+        self.ds = load_dataset('cais/mmlu', subset, split=split).shuffle(seed=2026)
         if subset == 'auxiliary_train':
-            self.ds = [i['train'] for i in self.ds]
+            self.ds = self.ds.map(lambda x: x['train'])
     
     def get_example(self, idx):
         example = self.ds[idx]
@@ -113,9 +114,10 @@ class MMLU(Task):
 class SmolTalk(Task):
     def __init__(self, split):
         super().__init__(split)
-        self.ds = load_dataset('HuggingFaceTB/smol-smoltalk', split=split)
+        self.ds = load_dataset('HuggingFaceTB/smol-smoltalk', split=split).shuffle(seed=2026)
     def get_example(self, idx):
         messages = self.ds[idx]['messages']
+        return messages
         
 class SimpleSpelling(Task):
     def __init__(self, split):
@@ -124,8 +126,8 @@ class SimpleSpelling(Task):
         filepath = os.path.join(BASE_DIR, 'words_alpha.txt')
         with open(filepath, 'r') as f:
             self.ds = [line.strip() for line in f.readlines()]
-        rng = random.Random(seed=2026)
-        self.ds = rng.shuffle(self.ds)
+        rng = random.Random(2026)
+        rng.shuffle(self.ds)
 
         ratio = 0.9 # 90% for train, 10% for test
         split_idx = int(len(self.ds) * ratio)
@@ -180,7 +182,7 @@ class SpellingBee(Task):
         messages.append({'content': answer_string, 'role': 'assistant'})
         return messages
 
-class CustomJson(Task):
+class CustomJSON(Task):
     def __init__(self, filepath, split):
         super().__init__(split)
         # additional assert, no test split in identity file
@@ -192,18 +194,22 @@ class CustomJson(Task):
     
     def get_example(self, idx):
         messages = self.ds[idx]
+        messages = json.loads(messages)
         return messages
 
 
 class TaskMixture:
     def __init__(self, tasks):
         self.tasks = tasks
+    
+    def __getitem__(self, task_idx):
+        return self.tasks[task_idx]
 
     def get_example(self, task_idx, idx):
         return self.tasks[task_idx].get_example(idx)
     
     def get_num_examples(self):
-        return [task.get_num_examples() for task in tasks]
+        return [task.get_num_examples() for task in self.tasks]
     
     def get_num_examples_total(self):
         return sum(self.get_num_examples())

@@ -1,7 +1,9 @@
 import os
+import re
 import json
 
 import torch
+from nanochat.gpt import GPTConfig, GPT
 
 def save_checkpoint(
     checkpoint_dir,
@@ -66,9 +68,9 @@ def _find_latest_checkpoint(checkpoint_dir):
 
 
 
-def load_model_from_dir(checkpoint_dir, device):
+def load_model_from_dir(checkpoint_dir, device, rank):
     max_step = _find_latest_checkpoint(checkpoint_dir)
-    model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=rank)
+    model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, max_step, device, load_optimizer=False, rank=rank)
     model_config_kwargs = meta_data['model_config']
     with torch.device("meta"):
         model_config = GPTConfig(**model_config_kwargs)

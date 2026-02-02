@@ -142,7 +142,6 @@ else:
 orig_model = model
 model = torch.compile(model, dynamic=False)
 num_params = sum(p.numel() for p in model.parameters())
-print(model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
 print(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
 num_flops_per_token = model.estimate_flops()
@@ -227,11 +226,15 @@ if not resuming:
     val_bpb = None
     min_val_bpb = float('inf')
     total_training_time = 0
+    smooth_train_loss = 0
+    ema_beta = 0.9
 else:
     step = meta_data['step']
     val_bpb = meta_data['val_bpb']
     min_val_bpb = meta_data['loop_state']['min_val_bpb']
     total_training_time = meta_data['loop_state']['total_training_time']
+    smooth_train_loss = meta_data['loop_state']['smooth_train_loss']
+    ema_beta = meta_data['loop_state']['ema_beta']
 
 
 # -----------------------------------------------------------------------------
@@ -296,7 +299,9 @@ while True:
                 'dataloader_state_dict': dataloader_state_dict,
                 'loop_state': {
                     'min_val_bpb': min_val_bpb,
-                    'total_training_time': total_training_time
+                    'total_training_time': total_training_time,
+                    'smooth_train_loss': smooth_train_loss,
+                    'ema_beta': ema_beta
                 }
             },
             rank=ddp_rank
@@ -310,7 +315,8 @@ while True:
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
             loss = model(x, y)
-        # computational graph will be saved until loss.backward is called
+        train_loss = loss.detach()
+        # computational graph will be saved until loss.backward is called, so we cannot sum loss and do average outside for loop
         loss = loss / grad_accum_steps
         loss.backward()
         x, y, dataloader_state_dict = next(train_loader)
@@ -336,6 +342,8 @@ while True:
     # -------------------------------------------------------------------------
 
     # logging (CPU action only)
+    smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss.item()
+    debiased_smooth_loss = smooth_train_loss / (1 - ema_beta ** (step + 1))
     pct_done = 100 * step / num_iterations
     tok_per_sec = int(args.tokens_per_step / dt)
     flops_per_sec = num_flops_per_token * args.tokens_per_step / dt
@@ -351,7 +359,7 @@ while True:
     else:
         eta_str = ""
     epoch = dataloader_state_dict["epoch"]
-    print(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
+    print(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.2f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
 
     # state update
     step += 1

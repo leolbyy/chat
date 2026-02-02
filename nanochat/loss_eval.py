@@ -10,7 +10,7 @@ def evaluate_bpb(model, val_iter, steps, token_bytes):
     total_nats = torch.tensor(0.0, dtype=torch.float32, device=model.get_device())
     total_bytes = torch.tensor(0, dtype=torch.int64, device=model.get_device())
     for _ in range(steps):
-        x, y, _ = next(val_iter)
+        x, y, *_ = next(val_iter)
         loss2d = model(x, y, loss_reduction='none')
         loss = loss2d.view(-1)
         y = y.view(-1)

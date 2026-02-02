@@ -63,7 +63,7 @@ class DistAdamW(torch.optim.Optimizer):
                 if p.numel() <= 1024:
                     p_slice = p
                     future = dist.all_reduce(grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
-                    grad_slice = grad
+                    g_slice= grad
                     is_large = False
                 else:
                     p_slice = p[rank * rank_size: (rank + 1) * rank_size]

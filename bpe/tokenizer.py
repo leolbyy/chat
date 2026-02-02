@@ -19,10 +19,10 @@ SPECIAL_TOKENS = [
     "<|user_end|>",
     "<|assistant_start|>", # assistant messages
     "<|assistant_end|>",
-    "<|python_start|>", # assistant invokes python REPL tool
-    "<|python_end|>",
-    "<|output_start|>", # python REPL outputs back to assistant
-    "<|output_end|>",
+    # "<|python_start|>", # assistant invokes python REPL tool
+    # "<|python_end|>",
+    # "<|output_start|>", # python REPL outputs back to assistant
+    # "<|output_end|>",
 ]
 
 class BaseTokenizer:
@@ -114,6 +114,38 @@ class BaseTokenizer:
         with open(pickle_path, 'wb') as f:
             pickle.dump(data, f)
         print(f"Saved tokenizer encoding to {pickle_path}")
+    
+    def render_conversation(self, messages):
+        user_start, user_end = self.encode_special("<|user_start|>"), self.encode_special("<|user_end|>")
+        assistant_start, assistant_end = self.encode_special("<|assistant_start|>"), self.encode_special("<|assistant_end|>")
+        bos = self.encode_special('<|bos|>')
+        conversation = [bos]
+        # some conversation may contain system prompt
+        if messages[0]['role'] == 'system':
+            messages[1]['content'] = messages[0]['content'] + messages[1]['content']
+            messages = messages[1:]
+        messages_content = []
+        for i, message in enumerate(messages):
+            if i % 2 == 0:
+                assert message['role'] == 'user', f"{message['role']}"
+            else:
+                assert message['role'] == 'assistant'
+            if message['role'] == 'user':
+                conversation.append(user_start)
+                conversation += self.encode(message['content'])
+                conversation.append(user_end)
+            else:
+                conversation.append(assistant_start)
+                conversation += self.encode(message['content'])
+                conversation.append(assistant_end)
+        return conversation, None
+
+    def render_conversation_batch(self, messages_list):
+        conversation_list = []
+        for messages in messages_list:
+            conversation_list.append(self.render_conversation(messages))
+        return conversation_list
+        
 
 
 def get_tokenizer(tokenizer_dir):

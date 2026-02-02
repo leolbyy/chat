@@ -112,22 +112,22 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
         yield inputs, targets, {"pf_idx": pf_idx, "rg_idx": rg_idx, "epoch": epoch}
 
 
-def get_task_example(dataset, task_idx, idx, step, tokenizer_batch_size):
+def get_task_example(dataset, task_idx, idx, step, progress):
     num_examples = dataset.get_num_examples()
     num_exmaples_total = dataset.get_num_examples_total()
     epoch = 0
     while True:
         examples = []
-        while len(examples) < tokenizer_batch_size:
-            if idx >= num_examples[task_idx]:
-                idx = idx - num_examples[task_idx]
-                task_idx += 1
-                if task_idx >= len(num_examples):
-                    task_idx = 0
-                    epoch += 1
-            examples.append(num_examples.get_example(task_idx, idx))
-        progress = (sum(num_examples[:task_idx]) + idx) / num_exmaples_total
-        yield examples, epoch, progress
+        if idx >= num_examples[task_idx]:
+            idx = idx - num_examples[task_idx]
+            task_idx += 1
+            if task_idx >= len(num_examples):
+                task_idx = 0
+                epoch += 1
+        messages = dataset[task_idx].get_example(idx)
+        idx += step
+        progress += step / num_exmaples_total
+        yield messages, epoch, progress
 
 
 
@@ -135,8 +135,7 @@ def distributed_task_data_loader(
     tokenizer,
     B, T,
     dataset,
-    tokenizer_threads=4,
-    tokenizer_batch_size=128,
+    split,
     device="cuda",
     buffer_size=1000
 ):
@@ -145,12 +144,10 @@ def distributed_task_data_loader(
     task_idx = 0
     idx = ddp_rank
     epoch = 0
-    
     step = ddp_world_size
     
     row_capacity = T + 1
-    batches = get_task_example(dataset, task_idx, idx, tokenizer_batch_size)
-    bos_token = tokenizer.get_bos_token_id()
+    example_iterator = get_task_example(dataset, task_idx, idx, step, 0.0)
     doc_buffer = []
 
     while True:
@@ -159,9 +156,9 @@ def distributed_task_data_loader(
             row = []
             while len(row) < row_capacity:
                 while len(doc_buffer) < buffer_size:
-                    doc_batch, epcoh, progress = next(batches)
-                    token_lists = tokenizer.encode(doc_batch, prepend=bos_token, num_threads=tokenizer_threads)
-                    doc_buffer.extend(token_lists)
+                    messages, epoch, progress = next(example_iterator)
+                    token_ids, _ = tokenizer.render_conversation(messages)
+                    doc_buffer.append(token_ids)
                 remaining = row_capacity - len(row)
                 best_idx = -1
                 best_len = 0
@@ -183,7 +180,6 @@ def distributed_task_data_loader(
         inputs = batch_tensor[:, :-1].to(device=device, non_blocking=use_cuda)
         targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda)
         yield inputs, targets, epoch, progress
-
 
 
 

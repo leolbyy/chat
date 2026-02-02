@@ -59,23 +59,23 @@ get_max_memory = torch.cuda.max_memory_allocated if device_type == 'cuda' else l
 BASE_DIR = get_base_dir()
 tokenizer_dir = os.path.join(BASE_DIR, 'tokenizer')
 tokenizer = get_tokenizer(tokenizer_dir)
-token_bytes = get_token_bytes()
+token_bytes = get_token_bytes(tokenizer_dir, device=device)
 
 # load model
-model, model_config_kwargs = load_model_from_dir(checkpoint_dir)
+checkpoint_dir = os.path.join(BASE_DIR, 'base_checkpoints', args.model_tag) # TODO Finish model tag logic handling
+model, model_config_kwargs = load_model_from_dir(checkpoint_dir, device=device, rank=ddp_rank)
+model.train()
 
 orig_model = model
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 num_params = sum(p.numel() for p in model.parameters())
-print(model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
 print(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
 num_flops_per_token = model.estimate_flops()
 print(f"Estimated flops per token: {num_flops_per_token}")
 
 # Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
-adam_betas = (args.adam_beta1, args.adam_beta2)
 optimizers = model.setup_optimizers(
     unembedding_lr = args.unembedding_lr,
     embedding_lr = args.embedding_lr,
@@ -108,10 +108,10 @@ train_dataset = TaskMixture([
     SmolTalk(split='train'),
     MMLU(subset='auxiliary_train', split='train'),
     GSM8K(subset='main', split='train'),
-    CustomJSON(filepath=personality_filepath),
-    CustomJSON(filepath=personality_filepath),
+    CustomJSON(filepath=personality_filepath, split='train'), # dummy option split
+    CustomJSON(filepath=personality_filepath, split='train'),
     SimpleSpelling(split='train'),
-    SpellingBee(size=10000, split='train')
+    SpellingBee(size=10000, split='train'),
 ])
 val_dataset = TaskMixture([
     SmolTalk(split='test'),
@@ -120,16 +120,16 @@ val_dataset = TaskMixture([
 ])
 
 
-train_loader = distributed_task_data_loader(tokenizer, args.device_batch_size, args.max_seq_len, dataset=train_dataset, device=device)
-val_loader = distributed_task_data_loader(tokenizer, args.device_batch_size, args.max_seq_len, dataset=val_dataset, device=device)
-x, y, epoch = next(train_loader)
+train_loader = distributed_task_data_loader(tokenizer, args.device_batch_size, args.max_seq_len, dataset=train_dataset, split='train', device=device)
+val_loader = distributed_task_data_loader(tokenizer, args.device_batch_size, args.max_seq_len, dataset=val_dataset, split='val', device=device)
+x, y, epoch, _ = next(train_loader)
 
 min_val_bpb = float('inf')
 smooth_train_loss = 0
 ema_beta = 0.9
 total_training_time =  0
 step = 1
-
+last_step = False
 progress = 0.0
 
 def get_lr_multiplier(progress):
@@ -166,7 +166,8 @@ while True:
                 'val_bpb': val_bpb,
                 'model_config': model_config_kwargs,
                 'user_config': user_config
-            }
+            },
+            ddp_rank
         )
     if last_step:
         break
@@ -183,15 +184,17 @@ while True:
     
     # if num-iterations is not given, we use progress from dataloader
     # else, we use progress calcuated by num-iteration
-    if args.num_iterations is None:
+    if args.num_iterations == -1:
         progress = data_progress
     else:
         progress = step / args.num_iterations
 
+    progress = min(progress, 1.0)
+
     lrm = get_lr_multiplier(progress)
-    for opt in optmizers:
+    for opt in optimizers:
         for group in opt.param_groups:
-            group['lr'] - group['inital_lr'] * lrm
+            group['lr'] - group['initial_lr'] * lrm
     muon_momentum = get_muon_momentum(step)
     for group in muon_optimizer.param_groups:
         group['momentum'] = muon_momentum
@@ -213,7 +216,7 @@ while True:
     if step > 10:
         total_training_time += dt
     
-    print(f"Step {step:05d} {progress * 100:2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dr * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_trianing_time/60:.2f}m")
+    print(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m")
 
 
     step += 1
