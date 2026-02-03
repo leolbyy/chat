@@ -120,6 +120,7 @@ class BaseTokenizer:
         assistant_start, assistant_end = self.encode_special("<|assistant_start|>"), self.encode_special("<|assistant_end|>")
         bos = self.encode_special('<|bos|>')
         conversation = [bos]
+        masks = [0]
         # some conversation may contain system prompt
         if messages[0]['role'] == 'system':
             messages[1]['content'] = messages[0]['content'] + messages[1]['content']
@@ -132,13 +133,25 @@ class BaseTokenizer:
                 assert message['role'] == 'assistant'
             if message['role'] == 'user':
                 conversation.append(user_start)
-                conversation += self.encode(message['content'])
+                masks.append(0)
+
+                token_ids = self.encode(message['content'])
+                conversation.extend(token_ids)
+                masks.extend([0 for _ in range(len(token_ids))])
+
                 conversation.append(user_end)
+                conversation.append(0)
             else:
                 conversation.append(assistant_start)
-                conversation += self.encode(message['content'])
+                masks.append(0)
+
+                token_ids = self.encode(message['content'])
+                conversation.extend(token_ids)
+                masks.append([1 for _ in range(token_ids)])
+
                 conversation.append(assistant_end)
-        return conversation, None
+                masks.append(1)
+        return conversation, masks
 
     def render_conversation_batch(self, messages_list):
         conversation_list = []

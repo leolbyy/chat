@@ -107,7 +107,7 @@ class MMLU(Task):
         prompt = prompt + 'Respond only with letter of the correct answer.\n'
 
         messages.append({'content': prompt, 'role': 'user'})
-        messages.append({'content': letters[answer], 'role': 'assistant'})
+        messages.append({'content': f'The correct answer is {letters[answer]} #### {letters[answer]}', 'role': 'assistant'})
         
         return messages
 
@@ -196,6 +196,34 @@ class CustomJSON(Task):
         messages = self.ds[idx]
         messages = json.loads(messages)
         return messages
+
+class ARC:
+  def __init__(self, subset, split):
+    super().__init__(split)
+    assert subet in ('ARC-Easy', 'ARC-Challenge')
+    self.ds = load_dataset('allenai/ai2_arc', 'ARC-Easy', split='train').shuffle(seed=2026)
+  
+  def get_example(self, idx):
+    example = self.ds[idx]
+    question = example['question']
+    choices = example['choices']['text']
+    letters = example['choices']['label']
+    answer = example['answerKey']
+
+    messages = []
+
+    prompt = ''
+    prompt = prompt + f'Question: {question}\n'
+    prompt = prompt + f'Choices: '
+    choices = ''.join([f'{letters[i]}:{choices[i]}' for i in range(len(letters))])
+    prompt = prompt + choices + '\n'
+    prompt = prompt + 'Respond only with letter of the correct answer.\n'
+
+    messages.append({'content': prompt, 'role': 'user'})
+    messages.append({'content': f'The correct answer is {answer} #### {answer}', 'role': 'assistant'})
+
+    return messages
+
 
 
 class TaskMixture:
