@@ -3,6 +3,7 @@ import re
 import json
 import random
 from utils.common import get_base_dir
+from nanochat.sample_eval import get_response
 from datasets import load_dataset
 
 BASE_DIR = get_base_dir()
@@ -59,7 +60,9 @@ class Task:
     def get_example(self):
         raise NotImplementedError
     
-    def get_num_examples(self):
+    def get_num_examples(self, size=-1):
+        if size > 0:
+            return min(len(self.ds), size)
         return len(self.ds)
 
 class GSM8K(Task):
@@ -104,7 +107,7 @@ class MMLU(Task):
         prompt = prompt + f'Choices: '
         choices = ''.join([f'{letters[i]}:{choices[i]}' for i in range(4)])
         prompt = prompt + choices + '\n'
-        prompt = prompt + 'Respond only with letter of the correct answer.\n'
+        # prompt = prompt + 'Respond only with letter of the correct answer.\n'
 
         messages.append({'content': prompt, 'role': 'user'})
         messages.append({'content': f'The correct answer is {letters[answer]} #### {letters[answer]}', 'role': 'assistant'})
@@ -112,7 +115,7 @@ class MMLU(Task):
         return messages
 
 class SmolTalk(Task):
-    def __init__(self, split):
+    def __init__(self, split, size=-1):
         super().__init__(split)
         self.ds = load_dataset('HuggingFaceTB/smol-smoltalk', split=split).shuffle(seed=2026)
     def get_example(self, idx):
@@ -120,7 +123,7 @@ class SmolTalk(Task):
         return messages
         
 class SimpleSpelling(Task):
-    def __init__(self, split):
+    def __init__(self, split, size=-1):
         super().__init__(split)
         
         filepath = os.path.join(BASE_DIR, 'words_alpha.txt')
@@ -148,7 +151,7 @@ class SimpleSpelling(Task):
         return messages
 
 class SpellingBee(Task):
-    def __init__(self, size, split):
+    def __init__(self, split, size=-1):
         super().__init__(split)
         
         filepath = os.path.join(BASE_DIR, 'words_alpha.txt')
@@ -156,9 +159,6 @@ class SpellingBee(Task):
             self.ds = [line.strip() for line in f.readlines()]
         rng = random.Random(2026)
         rng.shuffle(self.ds)
-
-        # Only use part of the data
-        self.ds = self.ds[:size]
 
         ratio = 0.9 # 90% for train, 10% for test
         split_idx = int(len(self.ds) * ratio)
@@ -200,8 +200,8 @@ class CustomJSON(Task):
 class ARC:
   def __init__(self, subset, split):
     super().__init__(split)
-    assert subet in ('ARC-Easy', 'ARC-Challenge')
-    self.ds = load_dataset('allenai/ai2_arc', 'ARC-Easy', split='train').shuffle(seed=2026)
+    assert subset in ('ARC-Easy', 'ARC-Challenge')
+    self.ds = load_dataset('allenai/ai2_arc', subset, split=split).shuffle(seed=2026)
   
   def get_example(self, idx):
     example = self.ds[idx]
@@ -217,7 +217,7 @@ class ARC:
     prompt = prompt + f'Choices: '
     choices = ''.join([f'{letters[i]}:{choices[i]}' for i in range(len(letters))])
     prompt = prompt + choices + '\n'
-    prompt = prompt + 'Respond only with letter of the correct answer.\n'
+    # prompt = prompt + 'Respond only with letter of the correct answer.\n'
 
     messages.append({'content': prompt, 'role': 'user'})
     messages.append({'content': f'The correct answer is {answer} #### {answer}', 'role': 'assistant'})
@@ -241,3 +241,53 @@ class TaskMixture:
     
     def get_num_examples_total(self):
         return sum(self.get_num_examples())
+
+
+
+
+def eval_task(task_name, model, tokenizer, max_problems=-1, k_shot=3):
+    assert task_name in ('mmlu', 'arc-easy'), f'currently eval task only support multiple choice tasks. expect mmlu | arc-easy, got {task_name}'
+    if task_name == 'mmlu':
+        task = MMLU(subset='all', split='test')
+    elif task_name == 'arc-easy':
+        task = ARC(subset='ARC-Easy', split='test')
+    
+    if max_problems == -1:
+        max_problems = task.get_num_examples()
+
+    
+    correct_count = 0
+    
+    for idx in range(max_problems):
+        example = task.get_example(idx)
+        input_token_ids, _ = tokenizer.render_conversation(example[:-1]) # remove answer
+        answser = extract_answer(example[-1]['content']) # get answer from last assistant message
+
+        assistant_end = tokenizer.encode_special('<|assistant_end|>')
+        bos = tokenizer.encode_special('<|bos|>')
+        max_tokens = 128
+        for _ in range(k_shot):
+            output = []
+            for next_token in model.generate(input_token_ids.to(model.device), max_tokens=max_tokens, temperature=1.0, top_k=10):
+                if (next_token == assistant_end or next_token == bos) or len(output) >= max_tokens:
+                    break
+                else:
+                    output.append(next_token)
+            output_str = tokenizer.decode(output)
+            output_answer = extract_answer(output_str)
+            if output_answer == INVALID_ANS:
+                continue
+            else:
+                if output_answer == answser:
+                    correct_count += 1
+                break
+    accuracy = correct_count / max_problems
+    return accuracy
+
+
+
+
+
+
+
+

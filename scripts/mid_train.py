@@ -6,8 +6,8 @@ from contextlib import nullcontext
 
 import torch
 
-from utils.common import get_base_dir, compute_init
-from utils.dataloader import distributed_task_data_loader
+from utils.common import get_base_dir, compute_init, autodetect_device_type
+from utils.dataloader import distributed_task_data_loader_with_pad
 from utils.checkpoint import save_checkpoint, load_checkpoint, load_model_from_dir
 
 from bpe.tokenizer import get_tokenizer, get_token_bytes
@@ -28,6 +28,7 @@ parser.add_argument("--model-tag", type=str, default=None, help="model tag to lo
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
+parser.add_argument("--num-epochs", type=int, default=1, help="number of epochs to train")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size")
@@ -44,6 +45,9 @@ parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number o
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
+
+if args.num_iterations == -1:
+    assert args.num_epochs > 0, "Either num-iterations or num-epochs must be positive"
 
 # compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
@@ -111,7 +115,7 @@ train_dataset = TaskMixture([
     CustomJSON(filepath=personality_filepath, split='train'), # dummy option split
     CustomJSON(filepath=personality_filepath, split='train'),
     SimpleSpelling(split='train'),
-    SpellingBee(size=10000, split='train'),
+    SpellingBee(split='train', size=10000),
 ])
 val_dataset = TaskMixture([
     SmolTalk(split='test'),
@@ -120,8 +124,8 @@ val_dataset = TaskMixture([
 ])
 
 
-train_loader = distributed_task_data_loader(tokenizer, args.device_batch_size, args.max_seq_len, dataset=train_dataset, split='train', device=device)
-val_loader = distributed_task_data_loader(tokenizer, args.device_batch_size, args.max_seq_len, dataset=val_dataset, split='val', device=device)
+train_loader = distributed_task_data_loader_with_pad(tokenizer, args.device_batch_size, args.max_seq_len, dataset=train_dataset, device=device)
+val_loader = distributed_task_data_loader_with_pad(tokenizer, args.device_batch_size, args.max_seq_len, dataset=val_dataset, device=device)
 x, y, epoch, _ = next(train_loader)
 
 min_val_bpb = float('inf')
@@ -185,7 +189,7 @@ while True:
     # if num-iterations is not given, we use progress from dataloader
     # else, we use progress calcuated by num-iteration
     if args.num_iterations == -1:
-        progress = data_progress
+        progress = data_progress / args.num_epochs
     else:
         progress = step / args.num_iterations
 
