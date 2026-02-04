@@ -125,7 +125,6 @@ class BaseTokenizer:
         if messages[0]['role'] == 'system':
             messages[1]['content'] = messages[0]['content'] + messages[1]['content']
             messages = messages[1:]
-        messages_content = []
         for i, message in enumerate(messages):
             if i % 2 == 0:
                 assert message['role'] == 'user', f"{message['role']}"
@@ -140,14 +139,14 @@ class BaseTokenizer:
                 masks.extend([0 for _ in range(len(token_ids))])
 
                 conversation.append(user_end)
-                conversation.append(0)
+                masks.append(0)
             else:
                 conversation.append(assistant_start)
                 masks.append(0)
 
                 token_ids = self.encode(message['content'])
                 conversation.extend(token_ids)
-                masks.append([1 for _ in range(token_ids)])
+                masks.extend([1 for _ in range(len(token_ids))])
 
                 conversation.append(assistant_end)
                 masks.append(1)

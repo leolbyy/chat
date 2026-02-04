@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 
 from utils.common import get_base_dir, compute_init, autodetect_device_type
-from utils.dataloader import distributed_task_data_loader_with_pad_sft
+from utils.dataloader import distributed_sft_data_loader
 from utils.checkpoint import save_checkpoint, load_checkpoint, load_model_from_dir
 
 from bpe.tokenizer import get_tokenizer, get_token_bytes
@@ -33,7 +33,7 @@ parser.add_argument("--num-iterations", type=int, default=-1, help="number of op
 parser.add_argument("--num-epochs", type=int, default=1, help="number of epochs to train")
 # Batch sizes
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size")
-parser.add_argument("--target-examples-per-step", type=int, default=524288, help="examples to process for each step")
+parser.add_argument("--target-examples-per-step", type=int, default=32, help="examples to process for each step")
 # Optimization
 parser.add_argument("--embedding-lr", type=float, default=0.2, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
@@ -43,7 +43,7 @@ parser.add_argument("--init-lr-frac", type=float, default=1.0, help="initial LR 
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
-parser.add_argument("--task_eval_every", type=int, default=150, help="evaluate tasks every N steps (-1 = disable)")
+parser.add_argument("--task-eval-every", type=int, default=150, help="evaluate tasks every N steps (-1 = disable)")
 parser.add_argument("--max-problems-per-task", type=int, default=32, help="maximum number of problems to eval per task, -1 = disbaled")
 args = parser.parse_args()
 user_config = vars(args).copy()
@@ -70,11 +70,11 @@ token_bytes = get_token_bytes(tokenizer_dir, device=device)
 # load model
 checkpoint_dir = os.path.join(BASE_DIR, f'{args.model_source}_checkpoints', args.model_tag) # TODO Finish model tag logic handling
 model, model_config_kwargs = load_model_from_dir(checkpoint_dir, device=device, rank=ddp_rank)
-max_seq_len = model_config_kwargs['max_seq_len']
+max_seq_len = model_config_kwargs['seq_len']
 model.train()
 
 orig_model = model
-model = torch.compile(model, dynamic=False)
+# model = torch.compile(model, dynamic=True)
 depth = model.config.n_layer
 num_params = sum(p.numel() for p in model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
@@ -117,14 +117,14 @@ train_dataset = TaskMixture([
     ARC(subset="ARC-Challenge", split="train"), # 1.1K rows
     GSM8K(subset="main", split="train"), # 8K rows
     SmolTalk(split="train", size=10000), # 10K rows of smoltalk
-    CustomJSON(filepath=personality_filepath), # 1K rows of synthetic identity conversations
+    CustomJSON(filepath=personality_filepath, split="train"), # 1K rows of synthetic identity conversations
     SimpleSpelling(split="train", size=300), # 300 rows of Simple Spelling (e.g. spell the word 'apple')
     SpellingBee(split="train", size=300), # 300 rows of Spelling Bee (e.g. how many 'r' are in 'strawberry'?)
 ]) # 2.3K + 1.1K + 8K + 10K + 1K + 0.3K + 0.3K = 23K rows
-val_dataset = SmolTalk(split="test") # general conversations, 24K rows (though we don't actually use all of it)
+val_dataset = TaskMixture([SmolTalk(split="test")]) # general conversations, 24K rows (though we don't actually use all of it)
 
-train_loader = distributed_task_data_loader_with_pad_sft(tokenizer, args.device_batch_size, max_seq_len, dataset=train_dataset, device=device)
-val_loader = distributed_task_data_loader_with_pad_sft(tokenizer, args.device_batch_size, max_seq_len, dataset=val_dataset, device=device)
+train_loader = distributed_sft_data_loader(tokenizer, args.device_batch_size, max_seq_len, dataset=train_dataset, device=device)
+val_loader = distributed_sft_data_loader(tokenizer, args.device_batch_size, max_seq_len, dataset=val_dataset, device=device)
 x, y, epoch, _ = next(train_loader)
 
 min_val_bpb = float('inf')
@@ -144,18 +144,16 @@ def get_muon_momentum(it):
     return momentum
 
 while True:
-    flops_so_far = num_flops_per_token * args.tokens_per_step * step
-
     if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
         model.eval()
         eval_steps = args.eval_tokens // (args.device_batch_size * max_seq_len * ddp_world_size)
         losses = []
         val_inputs, val_targets, *_ = next(val_loader)
         for _ in range(eval_steps):
-            val_inputs, val_targets, *_ = next(val_loader)
             with torch.no_grad(), autocast_ctx:
                 loss = model(val_inputs, val_targets)
             losses.append(loss)
+            val_inputs, val_targets, *_ = next(val_loader)
         val_loss = torch.stack(losses).mean()
         if ddp:
             dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
@@ -202,7 +200,7 @@ while True:
     # if num-iterations is not given, we use progress from dataloader
     # else, we use progress calcuated by num-iteration
     if args.num_iterations == -1:
-        progress = data_progress
+        progress = data_progress / args.num_epochs
     else:
         progress = step / args.num_iterations
 
@@ -230,12 +228,10 @@ while True:
     
     smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss.item()
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta ** (step))
-    tok_per_sec = args.tokens_per_step / dt
-    flops_per_sec = num_flops_per_token * args.tokens_per_step / dt
     if step > 10:
         total_training_time += dt
     
-    print(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m")
+    print(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | total time: {total_training_time/60:.2f}m")
 
 
     step += 1

@@ -212,6 +212,9 @@ def distributed_task_data_loader_with_pad(
                 if messages is None:
                     messages, epoch, progress = next(example_iterator)
                     token_ids, _ = tokenizer.render_conversation(messages)
+                if len(token_ids) > row_capacity: # never fit
+                    messages = None
+                    continue
                 if len(token_ids) <= remaining:
                     row.extend(token_ids)
                     row_length += len(token_ids)
@@ -227,7 +230,6 @@ def distributed_task_data_loader_with_pad(
         targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda)
         for i, row_length in enumerate(row_lengths):
             targets[i, row_length - 1:] = -1
-        print(inputs[0], targets[0], sep='\n')
         yield inputs, targets, epoch, progress # buggy here, progess may exceed real progress due to caching. (i.e. if new message does not fit, it will be cached for next row)
 
 
@@ -247,32 +249,34 @@ def distributed_sft_data_loader(
     epoch = 0
     step = ddp_world_size
 
-    row_capacity = T + 1
     example_iterator = get_task_example(dataset, task_idx, idx, step, 0.0)
     bos_token_id = tokenizer.get_bos_token_id()
 
     messages = None
     
     while True:
-        inputs = torch.full((B, T), bos_token_id, dtype=torch.long, device=device)
-        targets = torch.full((B, T), -1, dtype=torch.long, device=device)
-        # we cannot trim here because of model is compiled with dynamic=False. trim will cause re-compilation which is slow.
-        # max_len = 0
-        # for sft, each row is exactly one conversation
-        # this is to mimic real usage where each conversation is processed independently
+        token_ids_list = []
+        masks_list = []
         for _ in range(B):
-            messages, epoch, progress = next(example_iterator)
-            token_ids, masks = tokenizer.render_conversation(messages)
-            max_len = max(max_len, len(token_ids))
+            while True:
+                messages, epoch, progress = next(example_iterator)
+                token_ids, masks = tokenizer.render_conversation(messages)
+                if len(token_ids) > T:
+                    continue
+                else:
+                    break
+            token_ids_list.append(token_ids)
+            masks_list.append(masks)
+        max_len = max(len(t) for t in token_ids_list)
 
+        inputs = torch.full((B, max_len), bos_token_id, dtype=torch.long, device=device)
+        targets = torch.full((B, max_len), -1, dtype=torch.long, device=device)
+        for _, (token_ids, masks) in enumerate(zip(token_ids_list, masks_list)):
             inputs[_, :len(token_ids)] = torch.tensor(token_ids, dtype=torch.long)
             row_targets = torch.tensor(token_ids[1:], dtype=torch.long)
             mask_tensor = ~torch.tensor(masks[1:], dtype=torch.bool)  # 0 to True and 1 to False
             row_targets = torch.where(mask_tensor, -1, row_targets)
             targets[_, :len(token_ids) - 1] = row_targets
-        # # trim to max_len
-        # inputs = inputs[:, :max_len]
-        # targets = targets[:, :max_len]
 
         yield inputs, targets, epoch, progress
 

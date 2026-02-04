@@ -2,6 +2,7 @@ import os
 import re
 import json
 import random
+import torch
 from utils.common import get_base_dir
 from nanochat.sample_eval import get_response
 from datasets import load_dataset
@@ -197,7 +198,7 @@ class CustomJSON(Task):
         messages = json.loads(messages)
         return messages
 
-class ARC:
+class ARC(Task):
   def __init__(self, subset, split):
     super().__init__(split)
     assert subset in ('ARC-Easy', 'ARC-Challenge')
@@ -268,7 +269,7 @@ def eval_task(task_name, model, tokenizer, max_problems=-1, k_shot=3):
         max_tokens = 128
         for _ in range(k_shot):
             output = []
-            for next_token in model.generate(input_token_ids.to(model.device), max_tokens=max_tokens, temperature=1.0, top_k=10):
+            for next_token in model.generate(input_token_ids, max_tokens=max_tokens, temperature=1.0, top_k=10):
                 if (next_token == assistant_end or next_token == bos) or len(output) >= max_tokens:
                     break
                 else:

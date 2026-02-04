@@ -188,7 +188,8 @@ class GPT(nn.Module):
         self.x0_lambdas = nn.Parameter(torch.zeros(config.n_layer))
 
 
-        self.rotary_seq_len = config.seq_len * 10
+        # self.rotary_seq_len = config.seq_len * 10
+        self.rotary_seq_len = config.seq_len
         self.max_seq_len = self.rotary_seq_len # TODO
         head_dim = config.n_embd // config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)

@@ -30,7 +30,6 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--num-epochs", type=int, default=1, help="number of epochs to train")
 # Batch sizes
-parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size")
 parser.add_argument("--tokens-per-step", type=int, default=524288, help="tokens to process for each step")
 # Optimization
@@ -68,6 +67,7 @@ token_bytes = get_token_bytes(tokenizer_dir, device=device)
 # load model
 checkpoint_dir = os.path.join(BASE_DIR, 'base_checkpoints', args.model_tag) # TODO Finish model tag logic handling
 model, model_config_kwargs = load_model_from_dir(checkpoint_dir, device=device, rank=ddp_rank)
+max_seq_len = model_config_kwargs['seq_len']
 model.train()
 
 orig_model = model
@@ -92,11 +92,11 @@ for opt in optimizers:
         group['lr'] = group['lr'] * args.init_lr_frac
         group['init_lr'] = group['lr']
 
-tokens_per_fwd = args.device_batch_size * args.max_seq_len
+tokens_per_fwd = args.device_batch_size * max_seq_len
 world_tokens_per_fwd = tokens_per_fwd * ddp_world_size
 assert args.tokens_per_step % world_tokens_per_fwd == 0
 grad_accum_steps = args.tokens_per_step // world_tokens_per_fwd
-print(f"Tokens / micro-batch / rank: {args.device_batch_size} * {args.max_seq_len} = {tokens_per_fwd}")
+print(f"Tokens / micro-batch / rank: {args.device_batch_size} * {max_seq_len} = {tokens_per_fwd}")
 print(f"Tokens / micro-batch: {world_tokens_per_fwd}")
 print(f"Total batch size in tokens {args.tokens_per_step} --> gradient accumulation steps: {grad_accum_steps}")
 
@@ -124,8 +124,8 @@ val_dataset = TaskMixture([
 ])
 
 
-train_loader = distributed_task_data_loader_with_pad(tokenizer, args.device_batch_size, args.max_seq_len, dataset=train_dataset, device=device)
-val_loader = distributed_task_data_loader_with_pad(tokenizer, args.device_batch_size, args.max_seq_len, dataset=val_dataset, device=device)
+train_loader = distributed_task_data_loader_with_pad(tokenizer, args.device_batch_size, max_seq_len, dataset=train_dataset, device=device)
+val_loader = distributed_task_data_loader_with_pad(tokenizer, args.device_batch_size, max_seq_len, dataset=val_dataset, device=device)
 x, y, epoch, _ = next(train_loader)
 
 min_val_bpb = float('inf')
@@ -149,7 +149,7 @@ while True:
 
     if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
         model.eval()
-        eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
+        eval_steps = args.eval_tokens // (args.device_batch_size * max_seq_len * ddp_world_size)
         with autocast_ctx:
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         print(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
@@ -159,7 +159,7 @@ while True:
     
     if master_process and last_step:
         output_dirname = args.model_tag if args.model_tag else f"d{depth}"
-        checkpoint_dir = os.path.join(BASE_DIR, 'mid_train', output_dirname)
+        checkpoint_dir = os.path.join(BASE_DIR, 'mid_checkpoints', output_dirname)
         save_checkpoint(
             checkpoint_dir,
             step,

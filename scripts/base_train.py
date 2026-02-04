@@ -3,14 +3,14 @@ First Version without distributed training.
 """
 
 import os
-
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import argparse
 import time
 from contextlib import nullcontext
 
 import torch
 
-from utils.common import get_base_dir, compute_init
+from utils.common import get_base_dir, compute_init, autodetect_device_type
 from utils.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
 
 from bpe.tokenizer import get_tokenizer, get_token_bytes

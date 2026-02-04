@@ -211,7 +211,8 @@ __marimo__/
 # Project
 data/
 # tokenizer/
-base_checkpoints
+base_checkpoints/
+mid_checkpoints/
 eval_bundle/
 identity_conversations.jsonl
 words_alpha.txt
