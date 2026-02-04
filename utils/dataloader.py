@@ -262,7 +262,7 @@ def distributed_sft_data_loader(
         # this is to mimic real usage where each conversation is processed independently
         for _ in range(B):
             messages, epoch, progress = next(example_iterator)
-            token_ids, masks = tokenizer.render_conversation_sft(messages)
+            token_ids, masks = tokenizer.render_conversation(messages)
             max_len = max(max_len, len(token_ids))
 
             inputs[_, :len(token_ids)] = torch.tensor(token_ids, dtype=torch.long)
