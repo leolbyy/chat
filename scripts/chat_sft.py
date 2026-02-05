@@ -6,6 +6,7 @@ from contextlib import nullcontext
 
 import torch
 import torch.distributed as dist
+from torch.utils.tensorboard import SummaryWriter
 
 from utils.common import get_base_dir, compute_init, autodetect_device_type
 from utils.dataloader import distributed_sft_data_loader
@@ -109,6 +110,12 @@ assert args.target_examples_per_step % examples_per_step == 0, "Target examples 
 grad_accum_steps = args.target_examples_per_step // examples_per_step
 print(f"=> Setting grad accum steps: {grad_accum_steps}")
 
+# Logging with tensorboard setup
+if master_process:
+    logging_tag = 'chat_sft'
+    logging_dir = os.path.join(BASE_DIR, 'logs', logging_tag)
+    writer = SummaryWriter(log_dir=logging_dir)
+
 
 # define dataset
 personality_filepath = os.path.join(BASE_DIR, 'identity_conversations.jsonl')
@@ -157,6 +164,8 @@ while True:
         val_loss = torch.stack(losses).mean()
         if ddp:
             dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
+        if master_process:
+            writer.add_scalar(f'{logging_tag}/val_loss', val_loss.item(), step)
         print(f"Step {step:05d} | Validation loss: {val_loss:.6f}")
         model.train()
     
@@ -166,6 +175,9 @@ while True:
         with autocast_ctx:
             metrics['mmlu'] = eval_task('mmlu', model, tokenizer, max_problems=args.max_problems_per_task, k_shot=3) # accuracy@k
             metrics['arc-easy'] = eval_task('arc-easy', model, tokenizer, max_problems=args.max_problems_per_task, k_shot=3) # accuracy@k
+        if master_process:
+            for task_name, metric in metrics.items():
+                writer.add_scalar(f'{logging_tag}/task_{task_name}_accuracy', metric, step)
         print(f'Step {step:05d} | Task Evaluation Metrics: {metrics}')
         model.train()
     
@@ -230,6 +242,9 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta ** (step))
     if step > 10:
         total_training_time += dt
+    
+    if master_process:
+        writer.add_scalar(f'{logging_tag}/debiased_train_loss', debiased_smooth_loss, step)
     
     print(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | total time: {total_training_time/60:.2f}m")
 

@@ -5,6 +5,7 @@ import time
 from contextlib import nullcontext
 
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 from utils.common import get_base_dir, compute_init, autodetect_device_type
 from utils.dataloader import distributed_task_data_loader_with_pad
@@ -105,6 +106,12 @@ tokenizer_dir = os.path.join(BASE_DIR, 'tokenizer')
 tokenizer = get_tokenizer(tokenizer_dir)
 token_bytes = get_token_bytes(tokenizer_dir, device=device)
 
+# Logging with tensorboard setup
+if master_process:
+    logging_tag = 'mid_train'
+    logging_dir = os.path.join(BASE_DIR, 'logs', logging_tag)
+    writer = SummaryWriter(log_dir=logging_dir)
+
 
 # define dataset
 personality_filepath = os.path.join(BASE_DIR, 'identity_conversations.jsonl')
@@ -152,6 +159,8 @@ while True:
         eval_steps = args.eval_tokens // (args.device_batch_size * max_seq_len * ddp_world_size)
         with autocast_ctx:
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+        if master_process:
+            writer.add_scalar(f'{logging_tag}/bpb', val_bpb, step)
         print(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
@@ -219,7 +228,9 @@ while True:
     flops_per_sec = num_flops_per_token * args.tokens_per_step / dt
     if step > 10:
         total_training_time += dt
-    
+    if master_process:
+        writer.add_scalar(f'{logging_tag}/debiased_train_loss', debiased_smooth_loss, step)
+        writer.add_scalar(f'{logging_tag}/tok-per-sec', tok_per_sec, step)
     print(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m")
 
 

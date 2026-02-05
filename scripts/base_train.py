@@ -9,6 +9,7 @@ import time
 from contextlib import nullcontext
 
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 from utils.common import get_base_dir, compute_init, autodetect_device_type
 from utils.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
@@ -71,8 +72,8 @@ synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
 
 # Tokenizer init
-base_dir = get_base_dir()
-tokenizer_dir = os.path.join(base_dir, 'tokenizer')
+BASE_DIR = get_base_dir()
+tokenizer_dir = os.path.join(BASE_DIR, 'tokenizer')
 tokenizer = get_tokenizer(tokenizer_dir)
 vocab_size = tokenizer.get_vocab_size()
 print(f"Tokenizer vocab size: {vocab_size}")
@@ -126,9 +127,8 @@ model.to_empty(device=device) # All tensors got storage on target device but wit
 model.init_buffer() # init RoPE
 
 # If resuming, overwrite model parameters
-base_dir = get_base_dir()
 output_dirname = args.model_tag if args.model_tag else f"d{args.depth}"
-checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
+checkpoint_dir = os.path.join(BASE_DIR, "base_checkpoints", output_dirname)
 resuming = args.resume_from_step != -1
 if resuming:
     print(f'Resume from step {args.resume_from_step}')
@@ -215,6 +215,11 @@ def get_muon_momentum(it):
 def get_weight_decay(it):
     return weight_decay_scaled * (1 - it / num_iterations)
 
+# Logging with tensorboard setup
+if master_process:
+    logging_tag = 'base_train'
+    logging_dir = os.path.join(BASE_DIR, 'logs', logging_tag)
+    writer = SummaryWriter(log_dir=logging_dir)
 
 
 # -----------------------------------------------------------------------------
@@ -249,6 +254,8 @@ while True:
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         with autocast_ctx:
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+        if master_process:
+            writer.add_scalar(f'{logging_tag}/bpb', val_bpb, step)
         print(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
@@ -260,6 +267,10 @@ while True:
         model.eval()
         with autocast_ctx:
             results = evaluate_model(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
+        if master_process:
+            writer.add_scalars(f'{logging_tag}/eval_results', results['results'], step)
+            writer.add_scalars(f'{logging_tag}/eval_centered_results', results['centerd_results'], step)
+            writer.add_scalar(f'{logging_tag}/core_metric', results['core_metric'], step)
         print(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
         model.train()
     
@@ -276,11 +287,11 @@ while True:
             "My favorite color is",
             "If 5*x + 3 = 13, then x is",
         ]
-        with autocast_ctx:
-            for prompt in prompts:
+        for prompt in prompts:
+            with autocast_ctx:
                 response = get_response(model, tokenizer, prompt, max_tokens=16)
-                print(f'Input prompt: {prompt} --> Response: {response}')
-        
+            print(f'Input prompt: {prompt} --> Response: {response}')
+            writer.add_text(f'{logging_tag}/samples', f'Input prompt: {prompt} --> Response: {response}', step)
         model.train()
     
     if last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
@@ -359,6 +370,9 @@ while True:
     else:
         eta_str = ""
     epoch = dataloader_state_dict["epoch"]
+    if master_process:
+        writer.add_scalar(f'{logging_tag}/debiased_train_loss', debiased_smooth_loss, step)
+        writer.add_scalar(f'{logging_tag}/tok-per-sec', tok_per_sec, step)
     print(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.2f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
 
     # state update
