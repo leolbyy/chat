@@ -1,4 +1,4 @@
-export CHAT_BASE_DIR='$HOME/project_chat'
+export CHAT_BASE_DIR="$HOME/project_chat"
 
 uv sync --extra=gpu
 source .venv/bin/activate
