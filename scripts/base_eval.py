@@ -5,7 +5,7 @@ import argparse
 import torch
 
 from utils.checkpoint import load_model_from_dir
-from utils.common import get_base_dir, autodetect_device_type, compute_init
+from utils.common import get_base_dir, autodetect_device_type, compute_init, print0
 from utils.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
 from bpe.tokenizer import get_tokenizer, get_token_bytes
 
@@ -51,7 +51,7 @@ if __name__ == '__main__':
 
         with autocast_ctx:
             bpb = evaluate_bpb(model, dataloader, num_iterations, token_bytes)
-        print(f'{split} bpb: {bpb:.6f}')
+        print0(f'{split} bpb: {bpb:.6f}')
     
     # sample eval
     prompts = [
@@ -67,19 +67,19 @@ if __name__ == '__main__':
         with autocast_ctx:
             for prompt in prompts:
                 response = get_response(model, tokenizer, prompt, max_tokens=16)
-                print(f'Input prompt: {prompt} --> Response: {response}')
+                print0(f'Input prompt: {prompt} --> Response: {response}')
     
     # unconditioned samples from model as nanochat did
     if ddp_rank == 0:
         with autocast_ctx:
             for _ in range(8):
                 response = get_response(model, tokenizer, "", max_tokens=128, temperature=1.0)
-                print(f'Unconditioned sample {_}: {response}')
+                print0(f'Unconditioned sample {_}: {response}')
     
     # core metric eval
     with autocast_ctx:
         results = evaluate_model(model, tokenizer, device, max_per_task=args.max_per_task)
-        # print(f" CORE metric: {results['core_metric']:.4f}")
+        # print0(f" CORE metric: {results['core_metric']:.4f}")
     
 
 

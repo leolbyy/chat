@@ -39,29 +39,6 @@ class MyRMSNorm(torch.nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
-def my_attention(q, k, v, enable_gqa=False):
-    # q, k, v should be in [bs, n_head, seq_len, head_dim]
-    assert k.size == v.size
-    assert q.shape(-2) <= k.shape(-2)
-    
-    attention_mask = torch.ones(q.shape(-2), k.shape(-2), dtype=q.dtype, device=q.device).triu(k.shape(-2) - q.shape(-2) + 1)
-    attention_mask = attention_mask.masked_fill(attention_mask == 1, -float('inf'))
-
-    scale_factor = 1 / math.sqrt(q.size(-1))
-
-    if q.size(2) != k.size(2): # enable gqa
-        n_rep = q.size(2) // k.size(2)
-        bs, n_kv_head, slen, head_dim = k.shape()
-        k = k[:, :, None, :, :].expand(bs, n_kv_head, n_rep, slen, head_dim).reshape(bs, n_kv_head * n_rep, slen, head_dim)
-        v = v[:, :, None, :, :].expand(bs, n_kv_head, n_rep, slen, head_dim).reshape(bs, n_kv_head * n_rep, slen, head_dim)
-
-    attention_score = q @ k * scale_factor
-    attention_score = attention_score + attention_mask
-    attention_score = torch.softmax(attetnion_score, dim=-1)
-
-    return attention_score @ v
-
-
 
 def norm(x):
     return F.rms_norm(x, (x.size(-1),))
@@ -98,7 +75,7 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
 
     
-    def forward(self, x, cos_sin, kv_cache):
+    def forward(self, x, cos_sin, kv_cache, query_lens):
         B, T, C = x.size() # Keep same notation as nanochat project for easy development. [bs, seq_len, n_head * head_dim]
 
         q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
@@ -118,16 +95,25 @@ class CausalSelfAttention(nn.Module):
             y = flash_attn.flash_attn_func(q, k, v, causal=True)
         else:
             # Inference: use flash_attn_with_kvcache which handles cache management
+
+            # k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
+            cache_seqlens = kv_cache.get_pos()
+            if query_lens is not None:
+                max_len = min(max([x + y for x, y in zip(cache_seqlens, query_lens)]), kv_cache.max_seq_len)
+            else:
+                max_len = min(max([x + 1 for x in cache_seqlens]), kv_cache.max_seq_len)
+
+            kv_cache.update_layer_cache(self.layer_idx, k, v, query_lens)
             k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
+            k_cache, v_cache = k_cache[:, :max_len, :, :], v_cache[:, :max_len, :, :]
+
             y = flash_attn.flash_attn_with_kvcache(
                 q, k_cache, v_cache,
-                k=k, v=v,
-                cache_seqlens=kv_cache.cache_seqlens,
-                causal=True,
+                cache_seqlens
             )
             # Advance position after last layer processes
             if self.layer_idx == kv_cache.n_layers - 1:
-                kv_cache.advance(T)
+                kv_cache.update_pos(query_lens)
 
         # Re-assemble the heads and project back to residual stream
         y = y.contiguous().view(B, T, -1)
@@ -156,8 +142,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, layer_idx)
         self.mlp = MLP(config)
     
-    def forward(self, x, cos_sin, kv_cache):
-        x = x + self.attn(norm(x), cos_sin, kv_cache)
+    def forward(self, x, cos_sin, kv_cache, query_lens):
+        x = x + self.attn(norm(x), cos_sin, kv_cache, query_lens)
         x = x + self.mlp(norm(x))
 
         return x
@@ -306,7 +292,7 @@ class GPT(nn.Module):
         return optimizers
 
 
-    def forward(self, idx, targets=None, kv_cache=None, seqlens=None, loss_reduction='mean'):
+    def forward(self, idx, targets=None, kv_cache=None, query_lens=None, loss_reduction='mean'):
         B, T = idx.size()
 
         # Grab the rotary embeddings for the current sequence length (they are of the shape (1, seq_len, 1, head_dim // 2))
@@ -314,15 +300,28 @@ class GPT(nn.Module):
         assert idx.device == self.cos.device, f'Rotaty embeddings cache and idx are on different devices: idx --> {idx.device}, RoPE --> {self.cos.device}'
         assert self.cos.dtype == torch.bfloat16, 'Rotary embedding must be in bfloat16 format'
 
-        T0 = 0 if kv_cache is None else kv_cache.get_pos()
-        cos_sin = (self.cos[:, T0:T0 + T, :, :], self.sin[:, T0:T0 + T, :, :])
+        if kv_cache is not None:
+            cos_list, sin_list = [], []
+            start_pos_list = kv_cache.token_pos
+            for i, start_pos in enumerate(start_pos_list):
+                cos, sin = self.cos[:, start_pos:start_pos + T, :, :], self.sin[:, start_pos:start_pos + T, :, :]
+                cos_list.append(cos)
+                sin_list.append(sin)
+            cos = torch.cat(cos_list, dim=0)
+            sin = torch.cat(sin_list, dim=0)
+            cos_sin = (cos, sin)
+        else:
+            cos_sin = (self.cos[:, :T, :, :], self.sin[:, :T, :, :])
+
+        # T0 = 0 if kv_cache is None else kv_cache.get_pos()
+        # cos_sin = (self.cos[:, T0:T0 + T, :, :], self.sin[:, T0:T0 + T, :, :])
 
         x = self.transformer.wte(idx)
         x = norm(x)
         x0 = x
         for i, layer in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
-            x = layer(x, cos_sin, kv_cache)
+            x = layer(x, cos_sin, kv_cache, query_lens)
         x = norm(x)
         
         softcap = 15
@@ -340,9 +339,11 @@ class GPT(nn.Module):
             return logits
         
     @torch.inference_mode()
-    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
+    def generate(self, tokens, max_tokens, kv_cache=None, query_lens=None, temperature=1.0, top_k=None, seed=42):
         # TODO Implement my own version of batched inference, with KV Cache support
         assert isinstance(tokens, list)
+        assert isinstance(tokens[0], list)
+        assert query_lens is None or len(tokens) == len(query_lens)
 
         device = self.get_device()
         rng = None
@@ -350,10 +351,20 @@ class GPT(nn.Module):
             rng = torch.Generator(device=device)
             rng.manual_seed(seed)
         
-        ids = torch.tensor([tokens], dtype=torch.long, device=device)
+        B = len(tokens)
+
+        # ids = torch.tensor([tokens], dtype=torch.long, device=device)
+        ids = torch.tensor(tokens, dtype=torch.long, device=device)
+        if query_lens is not None:
+            query_lens_tensor = torch.tensor(query_lens, dtype=torch.int32, device=device)
+
         for _ in range(max_tokens):
-            logits = self.forward(ids)
-            logits = logits[:, -1, :]
+            logits = self.forward(ids, kv_cache=kv_cache, query_lens=query_lens)
+            if query_lens is not None:
+                logits = logits[torch.arange(B, device=device), query_lens_tensor - 1, :]
+            else:
+                logits = logits[:, -1, :]
+
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float('inf')
@@ -364,6 +375,10 @@ class GPT(nn.Module):
                 next_ids = torch.multinomial(probs, num_samples=1, generator=rng)
             else:
                 next_ids = torch.argmax(logits, dim=-1, keepdim=True)
-            ids = torch.cat((ids, next_ids), dim=1)
-            token = next_ids.item()
+            if kv_cache is not None:
+                ids = next_ids
+                query_lens = None # prefill done.
+            else:
+                ids = torch.cat((ids, next_ids), dim=1)
+            token = next_ids.tolist()
             yield token

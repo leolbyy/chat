@@ -11,7 +11,7 @@ from contextlib import nullcontext
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from utils.common import get_base_dir, compute_init, autodetect_device_type
+from utils.common import get_base_dir, compute_init, autodetect_device_type, print0
 from utils.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
 
 from bpe.tokenizer import get_tokenizer, get_token_bytes
@@ -19,8 +19,9 @@ from bpe.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.gpt import GPT, GPTConfig
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.core_eval import evaluate_model
-from nanochat.sample_eval import get_response
+from nanochat.sample_eval import get_response, get_response_batch_kvcache
 from nanochat.checkpoint import save_checkpoint, load_checkpoint
+from nanochat.kv_cache import KVCache
 
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -56,6 +57,7 @@ parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number o
 parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluate CORE metric every N steps (-1 = disable)")
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
+parser.add_argument("--sample-kvcache-every", type=int, default=-1, help='sample with kv cache from model every N steps. -1 = disable')
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
@@ -64,7 +66,7 @@ user_config = vars(args).copy()
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
-print(f"Device type set to {device_type}")
+print0(f"Device type set to {device_type}")
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type=device_type)
 master_process = ddp_rank == 0
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16)
@@ -76,7 +78,7 @@ BASE_DIR = get_base_dir()
 tokenizer_dir = os.path.join(BASE_DIR, 'tokenizer')
 tokenizer = get_tokenizer(tokenizer_dir)
 vocab_size = tokenizer.get_vocab_size()
-print(f"Tokenizer vocab size: {vocab_size}")
+print0(f"Tokenizer vocab size: {vocab_size}")
 token_bytes = get_token_bytes(tokenizer_dir, device=device)
 
 # Model kwargs
@@ -84,19 +86,19 @@ model_dim = args.depth * args.aspect_ratio
 assert model_dim % args.head_dim == 0, f"head_dim is not devisible by model_dim. head_dim: {args.head_dim}, model_dim: {model_dim}"
 num_heads = model_dim // args.head_dim
 num_kv_heads = num_heads # disable gqa. Allow config later
-print(f"num_layers: {args.depth}")
-print(f"model_dim: {model_dim}")
-print(f"num_heads: {num_heads}")
-print(f"num_kv_heads: {num_kv_heads}")
+print0(f"num_layers: {args.depth}")
+print0(f"model_dim: {model_dim}")
+print0(f"num_heads: {num_heads}")
+print0(f"num_kv_heads: {num_kv_heads}")
 
 # Optimizer setup
 tokens_per_fwd = args.device_batch_size * args.max_seq_len
 world_tokens_per_fwd = tokens_per_fwd * ddp_world_size
 assert args.tokens_per_step % world_tokens_per_fwd == 0
 grad_accum_steps = args.tokens_per_step // world_tokens_per_fwd
-print(f"Tokens / micro-batch / rank: {args.device_batch_size} * {args.max_seq_len} = {tokens_per_fwd}")
-print(f"Tokens / micro-batch: {world_tokens_per_fwd}")
-print(f"Total batch size in tokens {args.tokens_per_step} --> gradient accumulation steps: {grad_accum_steps}")
+print0(f"Tokens / micro-batch / rank: {args.device_batch_size} * {args.max_seq_len} = {tokens_per_fwd}")
+print0(f"Tokens / micro-batch: {world_tokens_per_fwd}")
+print0(f"Total batch size in tokens {args.tokens_per_step} --> gradient accumulation steps: {grad_accum_steps}")
 
 # Batch size scaling for learning rate
 batch_lr_scale = 1.0
@@ -107,11 +109,11 @@ if batch_ratio != 1.0:
     # AdamW use sqrt as when batch size is k times larger, the standard deivation is 1/sqrt(k) * original_sd.
     # There for times sqrt batch_lr_scale to match with original deviation
     batch_lr_scale = batch_ratio ** 0.5
-    print(f"Scaling learning rates by {batch_lr_scale:.4f} for tokens {args.tokens_per_step}. (Reference: {reference_batch_size})")
+    print0(f"Scaling learning rates by {batch_lr_scale:.4f} for tokens {args.tokens_per_step}. (Reference: {reference_batch_size})")
 
 weight_decay_scaled = args.weight_decay * (12 / args.depth) ** 2
 if args.depth != 12:
-    print(f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {args.depth}")
+    print0(f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {args.depth}")
 
 
 
@@ -131,7 +133,7 @@ output_dirname = args.model_tag if args.model_tag else f"d{args.depth}"
 checkpoint_dir = os.path.join(BASE_DIR, "base_checkpoints", output_dirname)
 resuming = args.resume_from_step != -1
 if resuming:
-    print(f'Resume from step {args.resume_from_step}')
+    print0(f'Resume from step {args.resume_from_step}')
     model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, args.resume_from_step, device=device, load_optimizer=True, rank=ddp_rank)
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data
@@ -143,26 +145,26 @@ orig_model = model
 model = torch.compile(model, dynamic=False)
 num_params = sum(p.numel() for p in model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
-print(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
+print0(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
 num_flops_per_token = model.estimate_flops()
-print(f"Estimated flops per token: {num_flops_per_token}")
+print0(f"Estimated flops per token: {num_flops_per_token}")
 
 
 if args.num_iterations > 0:
     num_iterations = args.num_iterations
-    print(f"Using user provided number of iterations: {args.num_iterations}")
+    print0(f"Using user provided number of iterations: {args.num_iterations}")
 elif args.target_flops > 0:
     num_iterations = round(args.target_flops / (num_flops_per_token * args.tokens_per_step))
-    print(f'Using taget flops to get number of iterations: {num_iterations}')
+    print0(f'Using taget flops to get number of iterations: {num_iterations}')
 elif args.target_param_data_ratio > 0:
     num_iterations = round(num_scaling_params * args.target_param_data_ratio / args.tokens_per_step)
-    print(f"Calculated number of iterations using target param data ratio: {num_iterations}")
+    print0(f"Calculated number of iterations using target param data ratio: {num_iterations}")
 else:
     raise ValueError("Number of itertaions cannot be determined. Please specify one of (num-iterations, target-flops, target-param-data-ratio)")
 total_tokens = args.tokens_per_step * num_iterations
-print(f"Total number of training tokens: {total_tokens}")
-print(f"Tokens : Param Ratio: {args.tokens_per_step * num_iterations / num_scaling_params:.2f}")
-print(f"Total training FLOPs estimate: {total_tokens * num_flops_per_token:e}")
+print0(f"Total number of training tokens: {total_tokens}")
+print0(f"Tokens : Param Ratio: {args.tokens_per_step * num_iterations / num_scaling_params:.2f}")
+print0(f"Total training FLOPs estimate: {total_tokens * num_flops_per_token:e}")
 
 
 # -----------------------------------------------------------------------------
@@ -256,7 +258,7 @@ while True:
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         if master_process:
             writer.add_scalar(f'{logging_tag}/bpb', val_bpb, step)
-        print(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
+        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
         model.train()
@@ -271,7 +273,7 @@ while True:
             writer.add_scalars(f'{logging_tag}/eval_results', results['results'], step)
             writer.add_scalars(f'{logging_tag}/eval_centered_results', results['centerd_results'], step)
             writer.add_scalar(f'{logging_tag}/core_metric', results['core_metric'], step)
-        print(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
+        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
         model.train()
     
 
@@ -287,11 +289,20 @@ while True:
             "My favorite color is",
             "If 5*x + 3 = 13, then x is",
         ]
-        for prompt in prompts:
+        for i, prompt in enumerate(prompts):
             with autocast_ctx:
                 response = get_response(model, tokenizer, prompt, max_tokens=16)
-            print(f'Input prompt: {prompt} --> Response: {response}')
-            writer.add_text(f'{logging_tag}/samples', f'Input prompt: {prompt} --> Response: {response}', step)
+            print0(f'Input prompt: {prompt} --> Response: {response}')
+            writer.add_text(f'{logging_tag}/samples_{i}', f'Input prompt: {prompt} --> Response: {response}', step)
+        # add batch infernce result
+        if args.sample_kvcache_every > 0 and step % args.sample_kvcache_every == 0:
+            kv_cache = KVCache(len(prompts), args.max_seq_len, num_kv_heads, args.head_dim, args.depth, device, torch.bfloat16)
+            with autocast_ctx:
+                response_list = get_response_batch_kvcache(model, tokenizer, prompts, max_tokens=16, kv_cache=kv_cache)
+            for i, (prompt, response) in enumerate(zip(prompts, response_list)):
+                print0(f'Input prompt: {prompt} --> Response with KV Cache: {response}')
+                writer.add_text(f'{logging_tag}/samples_{i}_kv_cache', f'Input prompt: {prompt} --> Response: {response}', step)
+            del kv_cache
         model.train()
     
     if last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
@@ -373,16 +384,16 @@ while True:
     if master_process:
         writer.add_scalar(f'{logging_tag}/debiased_train_loss', debiased_smooth_loss, step)
         writer.add_scalar(f'{logging_tag}/tok-per-sec', tok_per_sec, step)
-    print(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.2f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
+    print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.2f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
 
     # state update
     step += 1
 
-# print a few more stats
+# print0 a few more stats
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
-print(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
-print(f"Total training time: {total_training_time/60:.2f}m")
+print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
+print0(f"Total training time: {total_training_time/60:.2f}m")
 if val_bpb is not None:
-    print(f"Minimum validation bpb: {min_val_bpb:.6f}")
+    print0(f"Minimum validation bpb: {min_val_bpb:.6f}")
     
 

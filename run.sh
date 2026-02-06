@@ -1,5 +1,13 @@
+export CHAT_BASE_DIR='$HOME/project_chat'
+
 uv sync --extra=gpu
 source .venv/bin/activate
+
+python -m scripts.data_downloader --type=train -n 16 &
+python -m scripts.data_downloader --type=eval
+python -m scripts.data_downloader --type=personality
+python -m scripts.data_downloader --type=spell
+
 
 python -m scripts.base_train \
     --depth=6 \

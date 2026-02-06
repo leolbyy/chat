@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 
-from utils.common import get_base_dir, compute_init, autodetect_device_type
+from utils.common import get_base_dir, compute_init, autodetect_device_type, print0
 from utils.dataloader import distributed_sft_data_loader
 from utils.checkpoint import save_checkpoint, load_checkpoint, load_model_from_dir
 
@@ -54,7 +54,7 @@ if args.num_iterations == -1:
 
 # compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
-print(f'Deivce type set to {device_type}')
+print0(f'Deivce type set to {device_type}')
 
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type=device_type)
 master_process = ddp_rank == 0
@@ -79,9 +79,9 @@ orig_model = model
 depth = model.config.n_layer
 num_params = sum(p.numel() for p in model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
-print(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
+print0(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
 num_flops_per_token = model.estimate_flops()
-print(f"Estimated flops per token: {num_flops_per_token}")
+print0(f"Estimated flops per token: {num_flops_per_token}")
 
 # Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
 optimizers = model.setup_optimizers(
@@ -103,12 +103,12 @@ token_bytes = get_token_bytes(tokenizer_dir, device=device)
 
 # num iterations
 examples_per_step = args.device_batch_size * ddp_world_size
-print(f"Target examples per step: {args.target_examples_per_step}")
-print(f"Device batch size: {args.device_batch_size}")
-print(f"Examples per step is device_batch_size * ddp_world_size: {examples_per_step}")
+print0(f"Target examples per step: {args.target_examples_per_step}")
+print0(f"Device batch size: {args.device_batch_size}")
+print0(f"Examples per step is device_batch_size * ddp_world_size: {examples_per_step}")
 assert args.target_examples_per_step % examples_per_step == 0, "Target examples per step must be divisible by examples per step"
 grad_accum_steps = args.target_examples_per_step // examples_per_step
-print(f"=> Setting grad accum steps: {grad_accum_steps}")
+print0(f"=> Setting grad accum steps: {grad_accum_steps}")
 
 # Logging with tensorboard setup
 if master_process:
@@ -166,7 +166,7 @@ while True:
             dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
         if master_process:
             writer.add_scalar(f'{logging_tag}/val_loss', val_loss.item(), step)
-        print(f"Step {step:05d} | Validation loss: {val_loss:.6f}")
+        print0(f"Step {step:05d} | Validation loss: {val_loss:.6f}")
         model.train()
     
     if last_step or (args.task_eval_every > 0 and step % args.task_eval_every == 0):
@@ -178,7 +178,7 @@ while True:
         if master_process:
             for task_name, metric in metrics.items():
                 writer.add_scalar(f'{logging_tag}/task_{task_name}_accuracy', metric, step)
-        print(f'Step {step:05d} | Task Evaluation Metrics: {metrics}')
+        print0(f'Step {step:05d} | Task Evaluation Metrics: {metrics}')
         model.train()
     
     if master_process and last_step:
@@ -246,7 +246,7 @@ while True:
     if master_process:
         writer.add_scalar(f'{logging_tag}/debiased_train_loss', debiased_smooth_loss, step)
     
-    print(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | total time: {total_training_time/60:.2f}m")
+    print0(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | total time: {total_training_time/60:.2f}m")
 
 
     step += 1

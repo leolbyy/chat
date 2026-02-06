@@ -7,7 +7,7 @@ from contextlib import nullcontext
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from utils.common import get_base_dir, compute_init, autodetect_device_type
+from utils.common import get_base_dir, compute_init, autodetect_device_type, print0
 from utils.dataloader import distributed_task_data_loader_with_pad
 from utils.checkpoint import save_checkpoint, load_checkpoint, load_model_from_dir
 
@@ -51,7 +51,7 @@ if args.num_iterations == -1:
 
 # compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
-print(f'Deivce type set to {device_type}')
+print0(f'Deivce type set to {device_type}')
 
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type=device_type)
 master_process = ddp_rank == 0
@@ -76,9 +76,9 @@ model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 num_params = sum(p.numel() for p in model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
-print(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
+print0(f"Number of parameters after compile: {num_params} (original: {num_scaling_params})")
 num_flops_per_token = model.estimate_flops()
-print(f"Estimated flops per token: {num_flops_per_token}")
+print0(f"Estimated flops per token: {num_flops_per_token}")
 
 # Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
 optimizers = model.setup_optimizers(
@@ -97,9 +97,9 @@ tokens_per_fwd = args.device_batch_size * max_seq_len
 world_tokens_per_fwd = tokens_per_fwd * ddp_world_size
 assert args.tokens_per_step % world_tokens_per_fwd == 0
 grad_accum_steps = args.tokens_per_step // world_tokens_per_fwd
-print(f"Tokens / micro-batch / rank: {args.device_batch_size} * {max_seq_len} = {tokens_per_fwd}")
-print(f"Tokens / micro-batch: {world_tokens_per_fwd}")
-print(f"Total batch size in tokens {args.tokens_per_step} --> gradient accumulation steps: {grad_accum_steps}")
+print0(f"Tokens / micro-batch / rank: {args.device_batch_size} * {max_seq_len} = {tokens_per_fwd}")
+print0(f"Tokens / micro-batch: {world_tokens_per_fwd}")
+print0(f"Total batch size in tokens {args.tokens_per_step} --> gradient accumulation steps: {grad_accum_steps}")
 
 # Get tokenizer
 tokenizer_dir = os.path.join(BASE_DIR, 'tokenizer')
@@ -161,7 +161,7 @@ while True:
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         if master_process:
             writer.add_scalar(f'{logging_tag}/bpb', val_bpb, step)
-        print(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
+        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
         model.train()
@@ -231,7 +231,7 @@ while True:
     if master_process:
         writer.add_scalar(f'{logging_tag}/debiased_train_loss', debiased_smooth_loss, step)
         writer.add_scalar(f'{logging_tag}/tok-per-sec', tok_per_sec, step)
-    print(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m")
+    print0(f"Step {step:05d} {progress * 100:.2f}% | loss: {debiased_smooth_loss} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m")
 
 
     step += 1

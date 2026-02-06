@@ -49,3 +49,8 @@ def compute_init(device_type="cuda"):
         device = torch.device(device_type)
     
     return is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size, device
+
+def print0(s="",**kwargs):
+    ddp_rank = int(os.environ.get('RANK', 0))
+    if ddp_rank == 0:
+        print(s, **kwargs)
