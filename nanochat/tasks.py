@@ -269,8 +269,12 @@ def eval_task(task_name, model, tokenizer, max_problems=-1, k_shot=3):
         max_tokens = 128
         for _ in range(k_shot):
             output = []
-            for next_token in model.generate(input_token_ids, max_tokens=max_tokens, temperature=1.0, top_k=10):
-                if (next_token == assistant_end or next_token == bos) or len(output) >= max_tokens:
+            for next_token in model.generate([input_token_ids], max_tokens=max_tokens, temperature=1.0, top_k=10):
+                next_token = next_token[0][0]
+                if (next_token == assistant_end or next_token == bos):
+                    break
+                elif len(output) + 1 >= max_tokens:
+                    output.append(next_token)
                     break
                 else:
                     output.append(next_token)

@@ -271,7 +271,7 @@ while True:
             results = evaluate_model(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
         if master_process:
             writer.add_scalars(f'{logging_tag}/eval_results', results['results'], step)
-            writer.add_scalars(f'{logging_tag}/eval_centered_results', results['centerd_results'], step)
+            writer.add_scalars(f'{logging_tag}/eval_centered_results', results['centered_results'], step)
             writer.add_scalar(f'{logging_tag}/core_metric', results['core_metric'], step)
         print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
         model.train()

@@ -80,11 +80,11 @@ class DistAdamW(torch.optim.Optimizer):
             eps = group['eps']
             wd = group['weight_decay']
 
-            self._lr_t.fill_ = lr
-            self._beta1_t.fill_ = beta1
-            self._beta2_t.fill_ = beta2
-            self._eps_t.fill_ = eps
-            self._wd_t.fill_ = wd
+            self._lr_t.fill_(lr)
+            self._beta1_t.fill_(beta1)
+            self._beta2_t.fill_(beta2)
+            self._eps_t.fill_(eps)
+            self._wd_t.fill_(wd)
 
             for p, p_slice, g_slice, future, is_large in group_items:
                 future.wait()
@@ -97,7 +97,7 @@ class DistAdamW(torch.optim.Optimizer):
                 step = state['step']
                 m = state['m']
                 v = state['v']
-                self._step_t.fill_ = state['step']
+                self._step_t.fill_(state['step'])
                 adamw_step_fused(
                     p_slice, g_slice, m, v,
                     self._step_t, self._lr_t, self._beta1_t, self._beta2_t, self._eps_t, self._wd_t,
