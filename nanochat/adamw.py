@@ -30,7 +30,7 @@ class DistAdamW(torch.optim.Optimizer):
     def __init__(self, param_groups, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.01):
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         rank = dist.get_rank()
-        world_size = dist.get_world_size
+        world_size = dist.get_world_size()
         if rank == 0:
             for group in param_groups:
                 assert isinstance(group, dict), f"Expect param_groups to be a list of dict, instead got list of {type(group)}"
