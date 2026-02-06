@@ -20,7 +20,7 @@ def evaluate_bpb(model, val_iter, steps, token_bytes):
         total_nats += (loss * (num_bytes > 0)).sum() # in tokenizer, bytes count for special tokens are 0. By > 0, we ignore all the special tokens is any
         total_bytes += num_bytes.sum()
 
-    world_size = dist.get_world_size if dist.is_initialized() else 1
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
     if world_size > 1:
         dist.all_reduce(total_nats, op=dist.ReduceOp.SUM)
         dist.all_reduce(total_bytes, op=dist.ReduceOp.SUM)
