@@ -107,8 +107,8 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
         
         use_cuda = device == "cuda"
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
-        inputs = batch_tensor[:, :-1].to(device=device, non_blocking=use_cuda)
-        targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda)
+        inputs = batch_tensor[:, :-1].to(device=device, non_blocking=use_cuda).contiguous()
+        targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda).contiguous()
         yield inputs, targets, {"pf_idx": pf_idx, "rg_idx": rg_idx, "epoch": epoch}
 
 

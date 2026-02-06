@@ -21,8 +21,8 @@ def adamw_step_fused(
     # torch.Tensor.lerp(end, weight) --> start + (end - start) * weight
     m.lerp_(grad, 1- beta1_t)
     v.lerp_(grad * grad, 1 - beta2_t)
-    m_hat = m / (1 - beta1 ** step_t)
-    v_hat = v / (1 - beta2 ** step_t)
+    m_hat = m / (1 - beta1_t ** step_t)
+    v_hat = v / (1 - beta2_t ** step_t)
     p.add_(m_hat / (v_hat.sqrt() + eps_t), alpha=-lr_t)
 
 
@@ -70,7 +70,7 @@ class DistAdamW(torch.optim.Optimizer):
                     p_slice = p[rank * rank_size: (rank + 1) * rank_size]
                     g_slice = torch.empty_like(p_slice)
                     future = dist.reduce_scatter_tensor(g_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
-                group_items.append(p, p_slice, g_slice, future, is_large)
+                group_items.append((p, p_slice, g_slice, future, is_large))
             step_items.append((group, group_items))
 
         gather_futures: list[torch.Future] = []
