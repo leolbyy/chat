@@ -66,6 +66,7 @@ class DistAdamW(torch.optim.Optimizer):
                     g_slice= grad
                     is_large = False
                 else:
+                    rank_size = grad.shape[0] // world_size
                     p_slice = p[rank * rank_size: (rank + 1) * rank_size]
                     g_slice = torch.empty_like(p_slice)
                     future = dist.reduce_scatter_tensor(g_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
