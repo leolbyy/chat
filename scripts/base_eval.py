@@ -5,7 +5,7 @@ import argparse
 import torch
 
 from utils.checkpoint import load_model_from_dir
-from utils.common import get_base_dir, autodetect_device_type, compute_init, print0
+from utils.common import get_base_dir, autodetect_device_type, compute_init, print0, compute_cleanup
 from utils.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
 from bpe.tokenizer import get_tokenizer, get_token_bytes
 
@@ -82,4 +82,4 @@ if __name__ == '__main__':
         # print0(f" CORE metric: {results['core_metric']:.4f}")
     
 
-
+    compute_cleanup()

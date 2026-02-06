@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 
-from utils.common import get_base_dir, compute_init, autodetect_device_type, print0
+from utils.common import get_base_dir, compute_init, autodetect_device_type, print0, compute_cleanup
 from utils.dataloader import distributed_sft_data_loader
 from utils.checkpoint import save_checkpoint, load_checkpoint, load_model_from_dir
 
@@ -252,3 +252,5 @@ while True:
     step += 1
     if step == args.num_iterations or (master_process and progress >= 1.0):
         last_step = True
+
+compute_cleanup()

@@ -54,3 +54,8 @@ def print0(s="",**kwargs):
     ddp_rank = int(os.environ.get('RANK', 0))
     if ddp_rank == 0:
         print(s, **kwargs)
+
+def compute_cleanup():
+    """Companion function to compute_init, to clean things up before script exit"""
+    if is_ddp_initialized():
+        dist.destroy_process_group()

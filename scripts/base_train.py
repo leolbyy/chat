@@ -11,7 +11,7 @@ from contextlib import nullcontext
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from utils.common import get_base_dir, compute_init, autodetect_device_type, print0
+from utils.common import get_base_dir, compute_init, autodetect_device_type, print0, compute_cleanup
 from utils.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
 
 from bpe.tokenizer import get_tokenizer, get_token_bytes
@@ -397,3 +397,4 @@ if val_bpb is not None:
     print0(f"Minimum validation bpb: {min_val_bpb:.6f}")
     
 
+compute_cleanup()
