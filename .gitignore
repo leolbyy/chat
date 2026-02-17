@@ -214,7 +214,7 @@ data/
 base_checkpoints/
 mid_checkpoints/
 eval_bundle/
-identity_conversations.jsonl
+# identity_conversations.jsonl
 words_alpha.txt
 mid_train/
 logs/
