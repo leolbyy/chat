@@ -33,9 +33,10 @@ def flash_attn_func(q, k, v, causal=True):
     seq_len = q.size(2)
         
     if seq_len == 1:
-        return F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
-    return F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
-
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
+    else:
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+    return out.transpose(1, 2)
 
 def flash_attn_with_kvcache(q, k, v, cache_seqlens):
     # Remove FA3 support becuase current kvcache implementation does not support FA3.
@@ -70,7 +71,8 @@ def flash_attn_with_kvcache(q, k, v, cache_seqlens):
     attention_score = attention_score + attention_bias
     attention_score = torch.softmax(attention_score, dim=-1)
 
-    return attention_score @ v
+    output = attention_score @ v
+    return out.transpose(1, 2)
 
 
 
