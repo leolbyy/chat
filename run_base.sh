@@ -3,17 +3,18 @@ source .venv/bin/activate
 
 python -m scripts.base_train \
     --depth=6 \
-    --head-dim=128 \
-    --max-seq-len=1024 \
-    --device-batch-size=32 \
+    --head-dim=64 \
+    --max-seq-len=512 \
+    --device-batch-size=8 \
     --tokens-per-step=524288 \
-    --eval-every=100 \
+    --eval-every=500 \
     --eval-tokens=524288 \
     --core-metric-every=-1 \
     --sample-every=100 \
     --sample-kvcache-every=500 \
     --save-every=1000 \
     --num-iterations=5000
+
 python -m scripts.base_eval \
     --eval-tokens=524288 \
     --max-per-task=16 \
