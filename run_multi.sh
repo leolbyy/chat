@@ -12,22 +12,23 @@ cat > /etc/hosts <<EOF
 EOF
 
 source /etc/network_turbo
-
-export UV_INSTALL_DIR="$HOME/.cargo/bin"
+export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv &> /dev/null; then
     command -v curl &> /dev/null || (apt-get update && apt-get install -y curl)
+    export UV_INSTALL_DIR="$HOME/.local/bin"
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
+    uv python install 3.11
 fi
 
 CHAT_BASE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export CHAT_BASE_DIR
-export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 
+export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 uv sync --extra=gpu
 source .venv/bin/activate
 
-python -m scripts.data_downloader --type=train -n 370 &
+export HF_ENDPOINT=https://hf-mirror.com
+python -m scripts.data_downloader --type=train -n 370 --use-mirror &
 DATASET_DOWNLOAD_PID=$!
 python -m scripts.data_downloader --type=eval
 # python -m scripts.data_downloader --type=personality

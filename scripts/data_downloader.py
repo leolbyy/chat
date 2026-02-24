@@ -108,6 +108,7 @@ if __name__ == '__main__':
     parser.add_argument('-n', '--num-files', type=int, default=-1, help='Number of shards to download. -1 = disable. (Default: -1)')
     parser.add_argument('-t', '--num-threads', type=int, default=16, help='Number of threads to download the files. (default: 16)')
     parser.add_argument('--type', type=str, default='train', help='Type of data to download. train: training data. eval: evaluation data. eval will ignore num-files and num-threads arguemnts. (default: train)')
+    parser.add_argument('--use-mirror', action='store_true', help='Use mirror site for huggingface')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -117,7 +118,10 @@ if __name__ == '__main__':
     if args.type == 'train':
         DATA_DIR = os.path.join(BASE_DIR, 'data')
         os.makedirs(DATA_DIR, exist_ok=True)
-        BASE_URL = "https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
+        if not args.use_mirror:
+            BASE_URL = "https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
+        else:
+            BASE_URL = "https://hf-mirror.com/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
         MAX_SHARD = 1822
         MAX_ATTEMPTS = 5
         WAIT_TIME = 3
