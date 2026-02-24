@@ -21,7 +21,9 @@ if ! command -v uv &> /dev/null; then
     export PATH="$HOME/.cargo/bin:$PATH"
 fi
 
-export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+CHAT_BASE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export CHAT_BASE_DIR
+# export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 uv sync --extra=gpu
 source .venv/bin/activate
