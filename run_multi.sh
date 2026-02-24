@@ -13,8 +13,7 @@ EOF
 
 source /etc/network_turbo
 
-export CHAT_BASE_DIR="/root/autodl-tmp/chat"
-
+export UV_INSTALL_DIR="$HOME/.cargo/bin"
 if ! command -v uv &> /dev/null; then
     command -v curl &> /dev/null || (apt-get update && apt-get install -y curl)
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -23,7 +22,7 @@ fi
 
 CHAT_BASE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export CHAT_BASE_DIR
-# export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 uv sync --extra=gpu
 source .venv/bin/activate
