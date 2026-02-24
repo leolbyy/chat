@@ -21,6 +21,7 @@ def download_single_file(index):
     # check whether file already downloaded
     if os.path.exists(filepath):
         logger.info(f'File {filename} already exist. Skip download.')
+        return True
     else:
         logger.debug(f'Downloading {filename}...')
 
