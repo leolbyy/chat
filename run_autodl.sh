@@ -1,4 +1,3 @@
-export OMP_NUM_THREADS=4
 CURRENT_HOSTNAME=$(hostname)
 
 if [ -f /etc/hosts ]; then

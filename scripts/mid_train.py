@@ -5,6 +5,7 @@ import time
 from contextlib import nullcontext
 
 import torch
+import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 
 from utils.common import get_base_dir, compute_init, autodetect_device_type, print0, compute_cleanup
@@ -207,7 +208,7 @@ while True:
     lrm = get_lr_multiplier(progress)
     for opt in optimizers:
         for group in opt.param_groups:
-            group['lr'] - group['initial_lr'] * lrm
+            group['lr'] = group['initial_lr'] * lrm
     muon_momentum = get_muon_momentum(step)
     for group in muon_optimizer.param_groups:
         group['momentum'] = muon_momentum
@@ -238,4 +239,15 @@ while True:
     if step == args.num_iterations or (master_process and progress >= 1.0):
         last_step = True
 
+    last_step_tensor = torch.tensor(
+        [1 if last_step else 0],
+        dtype=torch.uint8,
+        device=device
+    )
+
+    if dist.is_initialized():
+        dist.broadcast(last_step_tensor, src=0)
+
+    last_step = bool(last_step_tensor.item())
+    
 compute_cleanup()

@@ -33,7 +33,7 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--num-epochs", type=int, default=1, help="number of epochs to train")
 # Batch sizes
-parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size")
+parser.add_argument("--device-batch-size", type=int, default=4, help="per-device batch size")
 parser.add_argument("--target-examples-per-step", type=int, default=32, help="examples to process for each step")
 # Optimization
 parser.add_argument("--embedding-lr", type=float, default=0.2, help="learning rate for embedding parameters (Adam)")
@@ -221,7 +221,7 @@ while True:
     lrm = get_lr_multiplier(progress)
     for opt in optimizers:
         for group in opt.param_groups:
-            group['lr'] - group['initial_lr'] * lrm
+            group['lr'] = group['initial_lr'] * lrm
 
     muon_momentum = get_muon_momentum(step)
 
@@ -252,5 +252,16 @@ while True:
     step += 1
     if step == args.num_iterations or (master_process and progress >= 1.0):
         last_step = True
+
+    last_step_tensor = torch.tensor(
+        [1 if last_step else 0],
+        dtype=torch.uint8,
+        device=device
+    )
+
+    if dist.is_initialized():
+        dist.broadcast(last_step_tensor, src=0)
+
+    last_step = bool(last_step_tensor.item())
 
 compute_cleanup()

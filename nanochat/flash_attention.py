@@ -71,7 +71,7 @@ def flash_attn_with_kvcache(q, k, v, cache_seqlens):
     attention_score = attention_score + attention_bias
     attention_score = torch.softmax(attention_score, dim=-1)
 
-    output = attention_score @ v
+    out = attention_score @ v
     return out.transpose(1, 2)
 
 

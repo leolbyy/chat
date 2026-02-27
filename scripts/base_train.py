@@ -381,7 +381,7 @@ while True:
     else:
         eta_str = ""
     epoch = dataloader_state_dict["epoch"]
-    if master_process:
+    if master_process and step % 10 == 0:
         writer.add_scalar(f'{logging_tag}/debiased_train_loss', debiased_smooth_loss, step)
         writer.add_scalar(f'{logging_tag}/tok-per-sec', tok_per_sec, step)
     print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.2f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
