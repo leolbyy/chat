@@ -10,7 +10,7 @@ from jinja2 import Template
 import torch
 import torch.distributed as dist
 
-from utils.common import get_base_dir
+from utils.common import get_base_dir, print0
 
 
 # -----------------------------------------------------------------------------
@@ -288,7 +288,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
             'num_fewshot': task['num_fewshot'][0],
             'continuation_delimiter': task.get('continuation_delimiter', ' ')
         }
-        print(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})...", end='')
+        print0(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})...", end='')
 
         data_path = os.path.join(data_base_path, task_meta['dataset_uri'])
         with open(data_path, 'r', encoding='UTF-8') as f:
@@ -308,7 +308,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
         centered_results[label] = centered_result
 
         end_time = time.time()
-        print(f'accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {end_time - start_time:.2f}s')
+        print0(f'accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {end_time - start_time:.2f}s')
     
     # empty cache after core eval is done
     torch.cuda.empty_cache()

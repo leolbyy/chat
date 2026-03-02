@@ -10,7 +10,7 @@ def get_base_dir():
     return base_dir
 
 def autodetect_device_type():
-    if torch.cuda.is_available:
+    if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
         return "mps"

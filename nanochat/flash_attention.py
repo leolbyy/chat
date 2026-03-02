@@ -55,7 +55,7 @@ def flash_attn_with_kvcache(q, k, v, cache_seqlens):
     attention_mask = torch.ones(q.shape[0], q.shape[2], k.shape[2], dtype=torch.bool, device=q.device) # [batch_size, query_seq_len, kv_seq_len]
     attention_bias = torch.zeros(q.shape[0], q.shape[2], k.shape[2], dtype=q.dtype, device=q.device)
     for i in range(q.shape[0]):
-        attention_mask[i] = attention_mask[1].tril(diagonal=cache_seqlens[i])
+        attention_mask[i] = attention_mask[i].tril(diagonal=cache_seqlens[i])
         attention_bias.masked_fill_(~attention_mask[i], -float('inf'))    
     attention_bias = attention_bias.unsqueeze(1)
 
